@@ -1463,11 +1463,15 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
+        meta = metadata or {}
+        stream_continuation = meta.get("_stream_continuation") is True
+        if stream_continuation:
+            reply_to = meta.get("_stream_reply_to_message_id")
         last_event_id = None
         for index, chunk in enumerate(self.truncate_message(
                 self.format_message(content), self.max_message_length, len_fn=self.message_len_fn)):
             msg_content = self._build_text_message_content(chunk)
-            chunk_reply_to = reply_to if self._should_reply_anchor(reply_to, index) else None
+            chunk_reply_to = reply_to if self._should_reply_anchor(reply_to, index + int(stream_continuation)) else None
             self._apply_relation_metadata(
                 chat_id, msg_content, reply_to=chunk_reply_to, metadata=metadata
             )
