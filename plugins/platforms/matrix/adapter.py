@@ -1464,9 +1464,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
         meta = metadata or {}
+        reply_to = meta.get("_stream_reply_to_message_id", reply_to)
         stream_continuation = meta.get("_stream_continuation") is True
-        if stream_continuation:
-            reply_to = meta.get("_stream_reply_to_message_id")
         last_event_id = None
         for index, chunk in enumerate(self.truncate_message(
                 self.format_message(content), self.max_message_length, len_fn=self.message_len_fn)):
