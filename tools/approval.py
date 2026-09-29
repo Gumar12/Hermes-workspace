@@ -371,6 +371,18 @@ _HERMES_CONFIG_PATH = (
     r'(?:\$hermes_home|\$\{hermes_home\})/)'
     r'config\.yaml\b'
 )
+
+# ~/.hermes as a data directory (not just config.yaml/.env): the agent's own
+# state.db, sessions/, memories/, plugins/. Resolved absolute HERMES_HOME
+# subpaths fold to ~/.hermes/ at detection time, so one static fragment
+# covers default, relocated, and $HERMES_HOME spellings (#109367).
+# ponytail: prompt-grade (DANGEROUS), not hardline, except bare-home rm.
+_HERMES_HOME_PATH = (
+    r'(?:~/\.hermes|'
+    r'(?:\$home|\$\{home\})/\.hermes|'
+    r'(?:\$hermes_home|\$\{hermes_home\}))'
+    r'(?=[\s\"\'`;|&<>()/$]|$)'
+)
 _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*)'
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = (
@@ -532,6 +544,12 @@ HARDLINE_PATTERNS = [
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
+    # The active agent home is not disposable scratch: rm -rf on the bare
+    # ~/.hermes / $HERMES_HOME (or the resolved absolute home, folded to
+    # ~/.hermes by _rewrite_resolved_hermes_home) sits below the yolo floor.
+    # ponytail: bare home only; child paths (cache prune, log rotate) stay
+    # prompt-grade via DANGEROUS so legit maintenance is not bricked.
+    (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~/\.hermes|\$\{?HOME\}?/\.hermes|\$\{?HERMES_HOME\}?)(?:/?|/\*)?'), "recursive delete of active Hermes home"),
     # Filesystem format — anchor to command position like every other
     # hardline entry so quoted prose ("echo \"does this workflow use mkfs
     # anywhere?\"") does not trip the unconditional floor (#93392).
@@ -1147,6 +1165,15 @@ DANGEROUS_PATTERNS = [
     # The trailing `[^\s"\']*` consumes the rest of the destination filename
     # (e.g. `authorized_keys` after the `~/.ssh/` fragment).
     (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # Hermes-home floor (#109367): destructive verbs scoped to the agent's own
+    # data dir. Read-only access (cat/cp-FROM, sqlite3 mode=ro, session_search)
+    # stays clean; writes/moves/deletes prompt instead of silent-approve.
+    # ponytail: one alternation, not per-verb rules; SQL predicate smarts skipped.
+    (rf'\brm\b[^\n]*?\s["\']?{_HERMES_HOME_PATH}[^\s"\']*', "delete Hermes home data (rm)"),
+    (rf'\b(mv|truncate|shred|unlink)\b[^\n]*?\s["\']?{_HERMES_HOME_PATH}[^\s"\']*', "destructive move/wipe of Hermes home data"),
+    (rf'\btee\b[^\n]*?\s["\']?{_HERMES_HOME_PATH}[^\s"\']*', "overwrite Hermes home data via tee"),
+    (rf'>>?\s*["\']?{_HERMES_HOME_PATH}[^\s"\']*', "overwrite Hermes home data via redirection"),
+    (rf'\bcp\b[^\n]*?/dev/(null|zero)\b[^\n]*?\s["\']?{_HERMES_HOME_PATH}[^\s"\']*["\']?{_COMMAND_TAIL}', "wipe Hermes home data via copy from /dev/null"),
     # In-place edits mutate the target file directly, bypassing redirection,
     # tee, and copy/move/install coverage. Gate the same user-controlled
     # startup/credential files so `sed -i ... ~/.bashrc` and `perl -i ...
@@ -1379,7 +1406,13 @@ def _home_prefix_fold_regex(path: str):
     body = r"[/\\]+".join(re.escape(c) for c in components)
     # Optional leading root separator (POSIX ``/`` or UNC ``\\``); a Windows
     # drive letter is captured as the first component.
-    return re.compile(r"[/\\]*" + body + _PATH_TAIL)
+    # IGNORECASE: Windows resolves paths case-insensitively (``c:\opt\data`` and
+    # ``C:\OPT\DATA`` are one directory) and Git Bash / PowerShell / cmd all
+    # accept a lowercase drive letter, so a case variant of the resolved home is
+    # the same directory the floor must cover. On POSIX this only ever
+    # over-folds (a differently-cased path folds to ``~``), which is
+    # over-blocking — the safe direction for a floor that yolo cannot bypass.
+    return re.compile(r"[/\\]*" + body + _PATH_TAIL, re.IGNORECASE)
 
 
 def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
@@ -1400,6 +1433,29 @@ def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
             command = pattern.sub(
                 lambda m: replacement + m.group("tail").replace("\\", "/"),
                 command,
+            )
+    return command
+
+
+def _fold_exact_home_paths(command: str, paths, replacement: str) -> str:
+    """Fold exact resolved home path tokens without folding child paths."""
+    # ponytail: exact tokens only; subpaths already folded by _fold_home_prefixes.
+    # ``*`` / ``/`` / ``\\`` in the boundary let a suffixed token (``<home>/*``,
+    # ``<home>/state.db``) fold too; the lookahead is zero-width so the suffix is
+    # preserved. IGNORECASE because a case variant of the home is the same
+    # directory on Windows (see _home_prefix_fold_regex).
+    boundary = r"""(?=$|[\s'"\`;|&<>()/*\\])"""
+    seen: set[str] = set()
+    for path in sorted((p for p in paths if p), key=len, reverse=True):
+        for variant in {path, path.replace("\\", "/"), path.replace("/", "\\")}:
+            if not variant or variant in seen:
+                continue
+            seen.add(variant)
+            command = re.sub(
+                re.escape(variant) + boundary,
+                replacement,
+                command,
+                flags=re.IGNORECASE,
             )
     return command
 
@@ -1448,7 +1504,8 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
         ]
     except Exception:
         return command
-    return _fold_home_prefixes(command, candidates, "~/.hermes")
+    command = _fold_home_prefixes(command, candidates, "~/.hermes")
+    return _fold_exact_home_paths(command, candidates, "~/.hermes")
 
 
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")
