@@ -54,7 +54,8 @@ _FLUSH_RESERVE_SECS = 1.0
 
 # Fallback control.error text when a routed server method returns an error without a message.
 _CONTROL_FAILURES = {
-    "session.save": "session save failed", "session.compress": "session compression failed"}
+    "session.save": "session save failed", "session.compress": "session compression failed",
+    "tools.configure": "tools configuration failed"}
 
 
 class ComputeHost:
@@ -436,7 +437,8 @@ class ComputeHost:
             else:
                 ack = self._control_ack(server, frame, session)
                 if "error" in ack:
-                    self._reply("control.error", sid, request_id, message=ack["error"])
+                    self._reply("control.error", sid, request_id, message=ack["error"],
+                                **({"code": c} if (c := ack.get("code")) else {}))
                 else:
                     self._reply("control.ack", sid, request_id, route_name=route_name, **ack)
 
@@ -459,8 +461,8 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         route_name = str(frame.get("route_name") or "")
         command = str(frame.get("command") or "")
-        if route_name in {"session.save", "session.compress"}:
-            params = {"session_id": sid}
+        if route_name in {"session.save", "session.compress", "tools.configure"}:
+            params = {**(frame.get("params") or {}), "session_id": sid}
             if route_name == "session.compress":
                 focus_topic = command.removeprefix("/compress").strip()
                 if focus_topic:
@@ -468,7 +470,7 @@ class ComputeHost:
             response = server._methods[route_name](frame.get("request_id"), params)
             if "error" in response:
                 failure = _CONTROL_FAILURES[route_name]
-                return {"error": str(response["error"].get("message") or failure)}
+                return {"error": str(response["error"].get("message") or failure), "code": response["error"].get("code")}
             ack = {"result": response.get("result") or {}}
             if route_name == "session.save":
                 return ack
