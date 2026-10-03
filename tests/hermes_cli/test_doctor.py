@@ -1610,7 +1610,7 @@ class TestMacOSTCCGrants:
         assert "stable" not in out
 
 
-def _bubblewrap_doctor_output(monkeypatch, tmp_path, bwrap_path, probe_failure=None):
+def _bubblewrap_doctor_output(monkeypatch, tmp_path, bwrap_path, probe_failure=None, process_limit_scoped=True):
     helper = TestDoctorMemoryProviderSection()
     monkeypatch.setenv("TERMINAL_ENV", "bubblewrap")
     # The terminal-backend check lives in doctor_tools; patch where production reads.
@@ -1627,6 +1627,7 @@ def _bubblewrap_doctor_output(monkeypatch, tmp_path, bwrap_path, probe_failure=N
     monkeypatch.setattr(doctor_tools_mod.subprocess, "run", fake_run)
     from tools.environments import bubblewrap as bwrap_mod
     monkeypatch.setattr(bwrap_mod, "run_probe", lambda: (bwrap_path, probe_failure))
+    monkeypatch.setattr(bwrap_mod, "run_process_limit_probe", lambda *_a: process_limit_scoped)
     return helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
 
 
@@ -1641,6 +1642,14 @@ def test_run_doctor_reports_bwrap_probe_failure_for_bubblewrap_backend(monkeypat
     assert "bwrap (found: bubblewrap 0.9.0)" in out
     assert "bwrap sandbox probe failed" in out
     assert "no permission" in out
+
+
+def test_run_doctor_reports_an_unavailable_process_limit_for_bubblewrap_backend(monkeypatch, tmp_path):
+    out = _bubblewrap_doctor_output(monkeypatch, tmp_path, "/usr/bin/bwrap", process_limit_scoped=False)
+    assert "process limit is not available on this kernel" in out
+    assert "bwrap sandbox probe failed" not in out
+    out = _bubblewrap_doctor_output(monkeypatch, tmp_path, "/usr/bin/bwrap")
+    assert "process limit is not available" not in out
 
 
 def test_run_doctor_reports_bwrap_missing_for_bubblewrap_backend(monkeypatch, tmp_path):
