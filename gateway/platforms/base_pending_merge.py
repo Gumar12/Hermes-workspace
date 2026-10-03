@@ -18,6 +18,11 @@ def _append_text(existing: Optional[str], new: Optional[str]) -> Optional[str]:
     return f"{existing}\n{new}" if existing else new
 
 
+def _padded_inline_flags(msg: MessageEvent) -> List[Optional[bool]]:
+    flags = list(getattr(msg, "media_text_inlined", []) or [])
+    return flags + [None] * (len(msg.media_urls) - len(flags))
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -37,10 +42,6 @@ def merge_pending_message_event(
         incoming_is_photo = event.message_type == MessageType.PHOTO
         both_photo = existing_is_photo and incoming_is_photo
         incoming_has_media = bool(event.media_urls)
-
-        def _padded_inline_flags(msg: MessageEvent) -> List[Optional[bool]]:
-            flags = list(getattr(msg, "media_text_inlined", []) or [])
-            return flags + [None] * (len(msg.media_urls) - len(flags))
 
         incoming_inline_flags: List[Optional[bool]] = []
         if incoming_has_media:

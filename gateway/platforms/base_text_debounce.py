@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.base_pending_merge import (
     _append_text,
+    _padded_inline_flags,
     merge_pending_message_event,
 )
 
@@ -119,23 +120,11 @@ class BaseTextDebounceMixin:
             if event.text:
                 state.event.text = _append_text(state.event.text, event.text)
             if event.media_urls:
-                state.event.media_text_inlined.extend(
-                    [None]
-                    * (
-                        len(state.event.media_urls)
-                        - len(state.event.media_text_inlined)
-                    )
+                state.event.media_text_inlined = (
+                    _padded_inline_flags(state.event) + _padded_inline_flags(event)
                 )
                 state.event.media_urls.extend(event.media_urls)
                 state.event.media_types.extend(event.media_types)
-                state.event.media_text_inlined.extend(event.media_text_inlined)
-                state.event.media_text_inlined.extend(
-                    [None]
-                    * (
-                        len(state.event.media_urls)
-                        - len(state.event.media_text_inlined)
-                    )
-                )
             state.event.absorb_reply_context(event)
             state.event.absorb_reply_expected(event)
             latest_message_id = getattr(event, "message_id", None)
