@@ -33,8 +33,6 @@ def merge_pending_message_event(
     """Store or merge a pending event: photo bursts/albums merge into the queued event so the next
     turn sees the whole burst; with ``merge_text`` rapid TEXT follow-ups append instead of
     replace."""
-    from gateway.platforms.base import BasePlatformAdapter
-
     existing = pending_messages.get(session_key)
     if existing:
         existing_type = getattr(existing, "message_type", None)
@@ -55,6 +53,8 @@ def merge_pending_message_event(
                 existing.media_types.extend(event.media_types)
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
+                from gateway.platforms.base import BasePlatformAdapter
+
                 existing.text = BasePlatformAdapter._merge_caption(
                     existing.text, event.text
                 )
