@@ -3113,6 +3113,10 @@ export interface Translations {
       export: string
       branchFrom: string
       rename: string
+      regenerateTitle: string
+      regeneratingTitle: string
+      regenerateTitleSuccess: string
+      regenerateTitleFailed: string
       archive: string
       unarchive: string
       newWindow: string
