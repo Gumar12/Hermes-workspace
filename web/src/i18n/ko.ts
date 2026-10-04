@@ -99,6 +99,14 @@ export const ko: Translations = {
     currentProfileOption: "이 대시보드 ({name})",
     memoryElevatedBanner: "에이전트의 메모리가 부족해지고 있습니다.",
     dismiss: "닫기",
+    sharedMetricsTitle: "Hermes 개선에 함께해 주시겠어요?",
+    sharedMetricsBody:
+      "공유 메트릭은 상한이 있는 카운터뿐이에요. 프롬프트, 파일, 경로, 에러 문구는 절대 포함하지 않아요. 수집은 이 기기에만 머물고, Nous로 보내는 건 별도로 선택해요.",
+    sharedMetricsShare: "Nous로 보내기",
+    sharedMetricsLocal: "이 기기만",
+    sharedMetricsOff: "괜찮아요",
+    sharedMetricsDetails: "자세히",
+    sharedMetricsSaveFailed: "선택을 저장하지 못했어요",
   },
 
   status: {

@@ -136,7 +136,9 @@ export const koBulkOverrides = {
       "placeholder": "답변을 입력하세요…",
       "sendFailed": "명확화 응답을 전송하지 못했습니다",
       "skip": "건너뛰기",
-      "skipped": "건너뜀"
+      "skipped": "건너뜀",
+      "multiSelectHint": "중복 선택 가능해요",
+      "singleSelectHint": "하나를 골라주세요"
     },
     "mcpSetup": {
       "authorizeAction": "승인",
@@ -329,12 +331,14 @@ export const koBulkOverrides = {
       "stopReading": "읽기 중지",
       "thinking": "생각 중",
       "thought": "생각",
-      "thoughtBriefly": "간단히 생각함"
+      "thoughtBriefly": "간단히 생각함",
+      "responseStopped": "응답이 중단되었어요"
     },
     "tool": {
       "actions": {
         "failedToOpen": "열기 실패",
         "opened": "열었습니다",
+        "opening": "여는 중",
         "ran": "실행됨",
         "ranCode": "코드 실행됨",
         "read": "읽음",
@@ -342,8 +346,7 @@ export const koBulkOverrides = {
         "running": "실행 중",
         "runningCode": "스크립팅 중",
         "searched": "검색함",
-        "searching": "검색 중",
-        "opening": "여는 중"
+        "searching": "검색 중"
       },
       "copyActivity": "활동 복사",
       "copyCode": "코드 복사",
@@ -575,62 +578,6 @@ export const koBulkOverrides = {
       "startingDesktopConnection": "데스크톱 연결 시작 중",
       "startingHermesDesktop": "Hermes Desktop을 시작하는 중…"
     }
-  },
-  "catalog": {
-    "about": "정보",
-    "add": "추가",
-    "added": "추가됨",
-    "addedDate": "추가일",
-    "allCategories": "모든 카테고리",
-    "allSources": "모든 소스",
-    "alphabetical": "이름",
-    "author": "작성자",
-    "back": "결과로 돌아가기",
-    "cardView": "카드 보기",
-    "category": "카테고리",
-    "clearFilters": "필터 초기화",
-    "commands": "명령어",
-    "destinationChanged": "대상 경로가 변경되었습니다. 이 대화상자를 닫고 설치 링크를 다시 여세요.",
-    "discover": "발견",
-    "documentation": "문서",
-    "explorePlugins": "플러그인 탐색",
-    "exploreSkills": "스킬 탐색",
-    "featured": "추천",
-    "filters": "필터",
-    "hooks": "후크",
-    "installDescription": "이 스킬은 새 세션에서 사용할 수 있습니다. 신뢰할 수 있는 소스만 설치하세요.",
-    "installHint": "설치하기 전에 소스를 검토하세요. 변경 사항은 새 세션에 적용됩니다.",
-    "installTo": "설치 위치",
-    "installed": "설치됨",
-    "installing": "설치 중…",
-    "license": "라이선스",
-    "listView": "목록 보기",
-    "loadFailed": "카탈로그를 불러올 수 없습니다",
-    "middleware": "미들웨어",
-    "more": "더 보기",
-    "mostStarred": "인기순",
-    "newest": "최신순",
-    "noResults": "일치하는 항목 없음",
-    "pinned": "검토된 커밋",
-    "platforms": "플랫폼",
-    "recentlyUpdated": "최근 업데이트됨",
-    "related": "유사한 항목",
-    "repository": "저장소",
-    "requires": "필수 조건",
-    "retry": "다시 시도",
-    "screenshots": "스크린샷",
-    "searchPlugins": "플러그인 검색",
-    "searchSkills": "스킬 검색",
-    "seeAll": "모두 보기",
-    "snapshotHint": "Hermes 카탈로그에서 가져왔습니다. 브라우징 시 소스 저장소에 접속하지 않습니다.",
-    "sortBy": "정렬 기준",
-    "source": "소스",
-    "tags": "태그",
-    "thisComputer": "이 컴퓨터",
-    "tools": "도구",
-    "tryAnother": "다른 검색어를 입력하거나 필터를 지워보세요.",
-    "updatedDate": "업데이트일",
-    "version": "버전"
   },
   "commandCenter": {
     "actionDone": "완료됨",
@@ -1298,7 +1245,12 @@ export const koBulkOverrides = {
     "yoloArmed": "이 대화에 YOLO가 활성화되었습니다",
     "yoloOff": "YOLO 꺼짐",
     "yoloTitle": "YOLO",
-    "yoloToggleFailed": "YOLO를 전환할 수 없습니다"
+    "yoloToggleFailed": "YOLO를 전환할 수 없습니다",
+    "resetZoom": "확대/축소 초기화",
+    "slashCommandIgnoredBody": "슬래시 명령어는 첨부파일과 함께 사용할 수 없어요. 첨부파일을 제거하거나 명령어를 따로 보내주세요.",
+    "slashCommandIgnoredTitle": "명령어가 전송되지 않았어요",
+    "zoomIn": "확대",
+    "zoomOut": "축소"
   },
   "fileMenu": {
     "copyPath": "경로 복사",
@@ -1667,6 +1619,9 @@ export const koBulkOverrides = {
         "help": "Cron 전달을 위한 기본 채널 또는 그룹입니다.",
         "label": "QQ 홈 채널"
       },
+      "QQBOT_HOME_CHANNEL_NAME": {
+        "label": "QQ 홈 채널 이름"
+      },
       "QQ_ALLOW_ALL_USERS": {
         "label": "모든 QQ 사용자 허용"
       },
@@ -1720,9 +1675,6 @@ export const koBulkOverrides = {
       },
       "WHATSAPP_MODE": {
         "label": "브리지 모드"
-      },
-      "QQBOT_HOME_CHANNEL_NAME": {
-        "label": "QQ 홈 채널 이름"
       }
     },
     "gatewayStopped": "메시징 Gateway가 중지되었습니다",
@@ -2017,7 +1969,11 @@ export const koBulkOverrides = {
       "unknownError": "알 수 없는 오류",
       "unreachableDescription": "미리보기 페이지에 접근할 수 없습니다.",
       "workspaceReloading": "작업 공간이 변경되어 미리보기를 다시 불러오는 중입니다"
-    }
+    },
+    "missingTitle": "파일이 존재하지 않아요",
+    "pin": "워크스페이스에 고정",
+    "saveScopeChanged": "이 초안을 저장하려면 원래 연결과 프로필로 전환해 주세요.",
+    "unpin": "워크스페이스 고정 해제"
   },
   "profiles": {
     "actions": "작업",
@@ -2396,7 +2352,9 @@ export const koBulkOverrides = {
       "userBubbleDesc": "내 메시지가 얼마나 투명해질지 설정합니다. 0이면 불투명하고, 100이면 테두리만 남습니다.",
       "userBubbleTitle": "메시지 말풍선",
       "vibeHeartsDesc": "감사, ily, 좋은 봇 등의 말을 하거나 하트를 보낼 때 떠오르는 하트입니다. 위의 '메시지 반응'과는 별개입니다.",
-      "vibeHeartsTitle": "바이브 하트"
+      "vibeHeartsTitle": "바이브 하트",
+      "chatTextScaleDesc": "UI 배율에 상대적으로 대화 텍스트와 메시지 편집기 크기를 조절해요. 사이드바와 컨트롤은 크기가 유지돼요.",
+      "chatTextScaleTitle": "채팅 텍스트 크기"
     },
     "billing": {
       "amountValidation": {
@@ -2666,7 +2624,10 @@ export const koBulkOverrides = {
       "systemDefault": "시스템 기본값",
       "toolsetsWipeConfirm": "활성화된 모든 툴셋을 제거하시겠습니까? 다시 활성화할 때까지 메모리, 터미널, 웹 검색, 위임 및 기타 대부분의 도구가 비활성화됩니다.",
       "voiceShortcutHintDesc": "설정 → 키보드 단축키(\"음성 대화 시작 / 중지\")에서 음성 녹음 단축키를 설정하세요. voice.record_key 구성 값은 CLI 및 TUI에만 적용됩니다.",
-      "voiceShortcutHintTitle": "음성 녹음 단축키"
+      "voiceShortcutHintTitle": "음성 녹음 단축키",
+      "keepAwakeAlways": "항상",
+      "keepAwakeOff": "끔",
+      "keepAwakeWhileWorking": "작업 중일 때"
     },
     "connections": {
       "addConnection": "연결 추가",
@@ -3315,7 +3276,9 @@ export const koBulkOverrides = {
           "hint": "이미지 분석",
           "label": "비전"
         }
-      }
+      },
+      "speed": "속도",
+      "speedStandard": "표준"
     },
     "notifications": {
       "completionSoundDesc": "에이전트 턴이 완료될 때 재생됩니다. 사전 설정을 선택하고 여기서 미리 들어보세요.",
@@ -3745,7 +3708,11 @@ export const koBulkOverrides = {
       "free": "무료",
       "noModels": "모델을 찾을 수 없음",
       "refreshModels": "모델 새로고침",
-      "search": "모델 검색"
+      "search": "모델 검색",
+      "addFavorite": "즐겨찾기에 추가",
+      "favoriteShortcut": "⇧ 클릭",
+      "favorites": "즐겨찾기",
+      "removeFavorite": "즐겨찾기에서 제거"
     },
     "modelOptions": {
       "effort": "노력",
@@ -3761,7 +3728,9 @@ export const koBulkOverrides = {
       "thinking": "생각 중",
       "ultra": "울트라",
       "updateFailed": "모델 옵션 업데이트 실패",
-      "xhigh": "매우 높음"
+      "xhigh": "매우 높음",
+      "ultrafast": "매우 빠르게",
+      "useStandardSpeed": "표준 속도 사용"
     },
     "paneControls": "창 제어",
     "statusbar": {
@@ -3952,7 +3921,8 @@ export const koBulkOverrides = {
         "missing_app": "앱 누락됨",
         "no_interactive_session": "대화형 세션 없음",
         "unknown": "상태 알 수 없음",
-        "version_too_old": "버전이 너무 오래됨"
+        "version_too_old": "버전이 너무 오래됨",
+        "unsupported_gpu": "지원되지 않는 GPU"
       },
       "settingsForm": {
         "optional": "(선택 사항)",
@@ -4055,7 +4025,8 @@ export const koBulkOverrides = {
       "unstage": "스테이지 취소",
       "viewAsList": "목록으로 보기",
       "viewAsTree": "트리로 보기",
-      "worktrees": "작업 트리"
+      "worktrees": "작업 트리",
+      "readOnlyScope": "읽기 전용 보기 — 스테이지, 되돌리기, 커밋은 커밋되지 않은 변경사항에 적용돼요"
     },
     "control": {
       "actionSucceeded": "작업이 성공했습니다",
@@ -4272,5 +4243,24 @@ export const koBulkOverrides = {
     "templateRows": "행",
     "templates": "템플릿",
     "zoneEditorTitle": "영역 편집기"
+  },
+  "composer": {
+    "queuedTerminalSelectionExpiredBody": "대기 중인 터미널 선택을 사용할 수 없어요. 줄을 다시 선택(Ctrl/Cmd+L)하고 메시지를 다시 대기열에 추가해 주세요.",
+    "terminalSelectionMissingBody": "보내기 전에 터미널 줄을 다시 선택해 주세요(Ctrl/Cmd+L). 원본 텍스트가 없어요.",
+    "terminalSelectionMissingTitle": "터미널을 선택할 수 없어요"
+  },
+  "sidebar": {
+    "projects": {
+      "createdInPreviousContext": "이전 연결 또는 프로필에서 생성된 프로젝트예요. 찾으려면 다시 전환해 주세요. IDEA.md가 작성되지 않았어요."
+    }
+  },
+  "skillDeepLink": {
+    "destinationChanged": "대상이 변경되었어요. 이 대화상자를 닫고 설치 링크를 다시 열어주세요.",
+    "installDescription": "이 스킬은 새 세션에서 사용할 수 있어요. 신뢰할 수 있는 소스만 설치해 주세요.",
+    "installTo": "설치 위치",
+    "installed": "설치됨",
+    "installing": "설치 중…",
+    "source": "소스",
+    "thisComputer": "이 컴퓨터"
   }
 } as unknown as TranslationOverrides
