@@ -319,6 +319,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const activateLiveSession = useCallback(
     (id: string) => {
+      const previousSid = getUiState().sid
       patchOverlayState({ sessions: false })
       patchUiState({ status: t('session.status.switchingSession') })
       // The card belongs to the session being left; the activated one answers with its own.
@@ -326,6 +327,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
       gw.request<SessionActivateResponse>('session.activate', { session_id: id })
         .then(raw => {
+          if (getUiState().sid !== previousSid) {
+            return
+          }
+
           const r = asRpcResult<SessionActivateResponse>(raw)
 
           if (!r) {
@@ -363,6 +368,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
         .catch((e: Error) => {
+          if (getUiState().sid !== previousSid) {
+            return
+          }
+
           sys(`error: ${e.message}`)
           patchUiState({ status: 'ready' })
         })
@@ -372,10 +381,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const resumeById = useCallback(
     (id: string) => {
+      const previousSid = getUiState().sid
       patchOverlayState({ sessions: false })
       patchUiState({ status: t('session.status.resuming') })
 
       return rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
+        if (getUiState().sid !== previousSid) {
+          return
+        }
+
         if (setup?.provider_configured === false) {
           panel(setupRequiredTitle(), buildSetupRequiredSections())
           patchUiState({ status: t('session.status.setupRequired') })
@@ -383,11 +397,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           return
         }
 
-        const previousSid = getUiState().sid
-
         return gw
           .request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
+            if (getUiState().sid !== previousSid) {
+              return
+            }
+
             const r = asRpcResult<SessionResumeResult>(raw)
 
             if (!r) {
@@ -432,6 +448,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
           })
           .catch((e: Error) => {
+            if (getUiState().sid !== previousSid) {
+              return
+            }
+
             sys(`error: ${e.message}`)
             patchUiState({ status: 'ready' })
           })
