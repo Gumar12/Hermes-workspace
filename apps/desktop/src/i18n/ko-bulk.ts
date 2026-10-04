@@ -1752,7 +1752,10 @@ export const koBulkOverrides = {
       "waiting": "Telegram 대기 중..."
     },
     "unknown": "알 수 없음",
-    "unsavedChanges": "저장되지 않은 변경사항"
+    "unsavedChanges": "저장되지 않은 변경사항",
+    "addListEntry": "추가",
+    "removeListEntry": "삭제",
+    "listEntryPlaceholder": "ID 입력"
   },
   "modelAssignment": {
     "confirmAction": "확인",
