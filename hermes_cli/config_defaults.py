@@ -764,7 +764,13 @@ DEFAULT_CONFIG = {
         # (Codex/Responses streams only): seconds without a substantive event before the stream
         # fails fast; None = built-in 60s default. Independent of "timeout" (the overall request
         # budget) — raising "timeout" alone does not widen this window. See #108104.
-        "compression": _aux(120, no_progress_timeout=None),
+        # local_override (compression only): re-routes compaction to its own provider/model/base_url
+        # while the LIVE main runtime is a listed local endpoint — main provider in
+        # custom/ollama/lmstudio/vllm/custom:* AND its base_url is an exact member of base_urls
+        # (trailing slash ignored; list each spelling you use, e.g. .../v1 and bare host:port).
+        # Every other main model keeps the base compression route; resolution reads the live runtime
+        # per call, so /model switches and concurrent sessions route correctly. Empty = disabled.
+        "compression": _aux(120, no_progress_timeout=None, local_override={}),
         "skills_hub": _aux(30),
         "approval": _aux(30),   # classifier — a fast/cheap model is recommended
         # /review reviewer: a full subagent on the async delegation rail, credentials resolved like
