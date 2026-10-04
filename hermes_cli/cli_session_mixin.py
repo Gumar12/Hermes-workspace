@@ -143,8 +143,11 @@ class CLISessionMixin:
         Idempotent; called from every resume path. Both ``os.chdir()`` and ``TERMINAL_CWD``
         are retargeted so the process and the terminal/code-exec tools agree (the local
         terminal backend snapshots cwd on first use, after this). No-op when no cwd was
-        recorded, the directory is gone (dim warning, never a crash), or we're already there.
+        recorded, the directory is gone (dim warning, never a crash), or we're already there
+        (in which case only a stale TERMINAL_CWD is synchronized).
         """
+        if getattr(self, "no_restore_cwd", False):
+            return
         recorded = (session_meta or {}).get("cwd")
         if not recorded:
             return
@@ -154,6 +157,7 @@ class CLISessionMixin:
         except OSError:
             current = None
         if current and os.path.realpath(recorded) == os.path.realpath(current):
+            os.environ["TERMINAL_CWD"] = recorded
             return
         if not os.path.isdir(recorded):
             msg = t("cli.session.cwd_gone", recorded=recorded, current=current or ".")

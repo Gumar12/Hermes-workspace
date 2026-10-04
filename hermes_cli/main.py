@@ -1890,6 +1890,7 @@ def cmd_chat(args):
     safe_mode = getattr(args, "safe_mode", False)
     kwargs = {
         "model": args.model,
+        "no_restore_cwd": getattr(args, "no_restore_cwd", False),
         "reasoning": getattr(args, "reasoning", None),
         "toolsets": args.toolsets,
         "query": args.query,
