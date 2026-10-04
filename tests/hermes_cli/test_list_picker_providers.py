@@ -354,3 +354,20 @@ def test_uncapped_catalog_still_rejects_foreign_model():
     row = _make_provider("openai-codex", models=["gpt-5.6"], is_current=True)
     result = model_switch_providers._finalize_picker_rows([row], {}, "claude-sonnet-5")[0]
     assert result["models"] == ["gpt-5.6"]
+
+
+def test_curated_openrouter_row_keeps_free_tail_past_max_models(monkeypatch):
+    """The OpenRouter row is already curated; its bottom "Free tier" block must survive the picker cap
+    while an ordinary provider row stays capped."""
+    curated = [(f"vendor/model-{i}", "") for i in range(55)] + [("stealth/free-model", "free, stealth model")]
+    other = [f"other-{i}" for i in range(60)]
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", lambda **_: [
+        _make_provider("openrouter", models=[mid for mid, _ in curated][:50]),
+        _make_provider("deepseek", models=other[:50]) | {"total_models": len(other)},
+    ])
+    monkeypatch.setattr(models_mod, "fetch_openrouter_models", lambda **_: curated)
+
+    rows = {r["slug"]: r for r in model_switch_providers.list_picker_providers(max_models=50)}
+
+    assert rows["openrouter"]["models"] == [mid for mid, _ in curated]
+    assert len(rows["deepseek"]["models"]) == 50
