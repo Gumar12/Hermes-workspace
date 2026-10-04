@@ -13,7 +13,12 @@ from __future__ import annotations
 import re
 from typing import Tuple
 
-__all__ = ["StreamingThinkScrubber", "THINK_TAG_NAMES", "THINK_OPEN_TAGS", "THINK_CLOSE_TAGS"]
+__all__ = ["StreamingThinkScrubber", "THINK_TAG_NAMES", "THINK_OPEN_TAGS", "THINK_CLOSE_TAGS", "PENDING_RETAIN_CAP"]
+
+# How much text a pending latch (#128294) may hold waiting for a close tag before giving up and
+# passing it through verbatim: hiding a real inline block needs the close to arrive within this
+# budget, and a prose mention is delayed by at most this much before streaming resumes.
+PENDING_RETAIN_CAP = 4096
 
 # The one list of model reasoning tag names. Every surface that hides reasoning (this scrubber,
 # the CLI stream filter, the gateway stream filter, the final-response regex stripper) binds to
@@ -54,6 +59,12 @@ class StreamingThinkScrubber:
         self._in_block: bool = False
         self._buf: str = ""
         self._last_emitted_ended_newline: bool = True
+        # Pending latch (#128294): a mid-line open tag (the prose-mention guard refuses to latch
+        # it as a hard block) held until a completing close hides it as a pair, the retain cap
+        # gives up and passes through, or flush() releases it verbatim as the mention it may be.
+        self._pending_name: str = ""
+        self._pending_open_text: str = ""
+        self._pending_buf: str = ""
         # Reasoning text the most recent feed() stripped from inside think blocks (tags excluded).
         self.last_hidden: str = ""
 
@@ -86,6 +97,31 @@ class StreamingThinkScrubber:
                 self._in_block = False
                 continue
 
+            # Pending latch (#128294): a mid-line open whose close may split across deltas.
+            # A completing close (same tag name, not a prefix of a longer name) hides the
+            # retained text as a pair; past the retain cap the latch gives up and passes the
+            # held text through verbatim -- never worse than the old leak-through, and a
+            # complete pair in a later buffer still strips via the pair branch.
+            if self._pending_name:
+                close_tag = f"</{self._pending_name}>"
+                joined = self._pending_buf + buf
+                idx = joined.lower().find(close_tag)
+                if idx != -1:
+                    # The close may straddle the pending_buf/new-delta junction: hide the
+                    # whole joined prefix up to it, then continue on whatever slice of *buf*
+                    # survives past the close tag.
+                    hidden.append(joined[:idx])
+                    consumed_from_buf = max(0, idx + len(close_tag) - len(self._pending_buf))
+                    self._pending_name = self._pending_open_text = self._pending_buf = ""
+                    buf = buf[consumed_from_buf:]
+                    continue
+                self._pending_buf = joined
+                buf = ""
+                if len(self._pending_buf) > PENDING_RETAIN_CAP:
+                    self._emit(out, self._pending_open_text + self._pending_buf)
+                    self._pending_name = self._pending_open_text = self._pending_buf = ""
+                break
+
             # Priority 1: closed <tag>X</tag> pair anywhere (even inline pairs are almost
             # certainly leaked reasoning). Priority 2: unterminated open tag at a block
             # boundary (gated so prose mentioning '<think>' isn't over-stripped). Earliest wins.
@@ -103,6 +139,18 @@ class StreamingThinkScrubber:
                 buf = buf[open_idx + open_len:]
                 continue
 
+            # Priority 3 (#128294): a complete open tag mid-line. It cannot latch the hard
+            # block (that gate IS the prose-mention guard), so hold the tail in the pending
+            # latch instead of streaming it out -- a split close then hides it as a pair.
+            mid_idx, mid_len, mid_name = self._find_first_open_anywhere(buf)
+            if mid_idx != -1:
+                self._emit(out, buf[:mid_idx])
+                self._pending_name = mid_name
+                self._pending_open_text = buf[mid_idx:mid_idx + mid_len]
+                self._pending_buf = ""
+                buf = buf[mid_idx + mid_len:]
+                continue
+
             # No resolvable tag: hold back any partial-tag prefix at the tail
             # so a tag split across deltas isn't missed, then emit the rest.
             self._emit(out, self._hold_partial(buf, self._ALL_TAGS))
@@ -110,6 +158,16 @@ class StreamingThinkScrubber:
 
         self.last_hidden = "".join(hidden)
         return "".join(out)
+
+    def _find_first_open_anywhere(self, buf: str) -> Tuple[int, int, str]:
+        """(idx, len, tag_name) of the earliest complete open tag at ANY position, or (-1, 0, "")."""
+        buf_lower = buf.lower()
+        hits = [
+            (idx, len(tag), tag[1:-1])
+            for tag in self._OPEN_TAGS
+            if (idx := buf_lower.find(tag)) != -1
+        ]
+        return min(hits, key=lambda h: h[0]) if hits else (-1, 0, "")
 
     def _hold_partial(self, buf: str, tags: Tuple[str, ...]) -> str:
         """Move a trailing partial-tag prefix of *buf* into ``_buf``; return the remainder."""
@@ -119,10 +177,18 @@ class StreamingThinkScrubber:
 
     def flush(self) -> str:
         """End-of-stream flush: inside an unterminated block the held-back content is discarded (leaking
-        partial reasoning is worse than a truncated answer), otherwise the tail is emitted verbatim.
-        Always resets the boundary flag — intra-turn retries flush then stream again without ``reset()``,
-        and a stale False flag made the new stream's opening ``<think>`` look mid-line."""
-        tail = "" if self._in_block else self._buf
+        partial reasoning is worse than a truncated answer), a pending latch (#128294) releases its
+        retained text verbatim -- tag literal included, byte-for-byte the mention it may have been --
+        otherwise the tail is emitted verbatim. Always resets the boundary flag — intra-turn retries
+        flush then stream again without ``reset()``, and a stale False flag made the new stream's
+        opening ``<think>`` look mid-line."""
+        if self._in_block:
+            tail = ""
+        elif self._pending_name:
+            tail = self._pending_open_text + self._pending_buf + self._buf
+            self._pending_name = self._pending_open_text = self._pending_buf = ""
+        else:
+            tail = self._buf
         self._buf = ""
         self._in_block = False
         self._last_emitted_ended_newline = True
