@@ -87,6 +87,7 @@ import {
   getSessionOwnerHint,
   idsShareLineage,
   type NewChatWorkspaceTarget,
+  ownerLookupSessionRows,
   resolveComposerSessionKey,
   rotateFreshDraftKey,
   sessionPinId,
@@ -1453,7 +1454,10 @@ export function useSessionActions({
         () => isCurrentResume() && !resumedSameSelectedSession && !takeWarmCache()
       )
 
-      const listedStored = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      // Messaging rows (telegram, …) live outside recents — resolve the
+      // provisional paint scope across every slice or a telegram open paints
+      // against the ambient profile before the by-id resolve lands (#126732).
+      const listedStored = ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedSessionId))
 
       if (ownerRoute || listedStored?.profile) {
         provisional.paint(transcriptRestScope(ownerRoute, listedStored, ambientConnectionId))
@@ -1562,7 +1566,7 @@ export function useSessionActions({
         const cachedState = warmHit.state
 
         const stored =
-          $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+          ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
 
         let cachedViewState =
           !cachedState.model && stored?.model != null
@@ -2132,7 +2136,7 @@ export function useSessionActions({
       setSessionStartedAt(runtimeStartedAt)
 
       const stored =
-        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+        ownerLookupSessionRows().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
 
       applyStoredSessionPreviewRuntimeInfo(stored, storedSessionId)
 
