@@ -26206,6 +26206,30 @@
             "default": "",
             "title": "Text"
           },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Message Id"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Submitted At"
+          },
           "display_kind": {
             "anyOf": [
               {
@@ -26464,7 +26488,8 @@
           "streaming",
           "queued",
           "steered",
-          "redirected"
+          "redirected",
+          "duplicate"
         ],
         "title": "PromptSubmitStatus",
         "type": "string"
