@@ -1243,3 +1243,36 @@ def test_route_profile_validation_fails_closed():
         assert WebhookAdapter._route_allows_profile(
             {"profile": malformed}, "worker"
         ) is False
+
+
+class TestBlankRouteSecretFailsClosed:
+    @pytest.mark.parametrize("blank", ["   ", "\t", "\n"])
+    def test_connect_rejects_a_whitespace_only_route_secret(self, blank):
+        adapter = _make_adapter(routes={"hook": {"secret": blank}})
+        with pytest.raises(ValueError, match="HMAC secret"):
+            asyncio.run(adapter.connect())
+
+    def test_connect_still_accepts_a_real_secret(self):
+        adapter = _make_adapter(routes={"hook": {"secret": "s3cr3t"}})
+        assert asyncio.run(adapter.connect()) is True
+
+    @pytest.mark.asyncio
+    async def test_request_rejects_a_whitespace_only_secret(self):
+        """A blank secret must not authenticate the request path."""
+        blank = "   "
+        adapter = _make_adapter(routes={"test": {"prompt": "hi"}}, secret=blank)
+        adapter.handle_message = AsyncMock()
+        body = b'{"data":"value"}'
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/test",
+                data=body,
+                headers={"X-Hub-Signature-256": _github_signature(body, blank)},
+            )
+            assert resp.status == 403
+        adapter.handle_message.assert_not_called()
+
+    def test_dynamic_route_rejects_a_whitespace_only_secret(self):
+        adapter = _make_adapter(secret="   ")
+        assert adapter._dynamic_route_allowed("hook", {}) is False
