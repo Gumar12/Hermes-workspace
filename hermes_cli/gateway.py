@@ -3122,6 +3122,21 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     return candidates
 
 
+def _service_install_root(root: Path) -> Path:
+    """The root a persisted supervisor command may name: the install's checkout.
+
+    A generation's venv console script runs with PROJECT_ROOT inside
+    ``installs/<key>/environments/<gen>/workspace`` — a GC-able tree keyed by
+    its own path, with no committed dependency environment of its own, so a
+    unit generated from there crash-loops with "no dependency environment is
+    committed" (#131164). Map such a root back to the checkout that owns the
+    generation; every other root passes through unchanged.
+    """
+    from pm.environments import owning_install_root
+
+    return owning_install_root(root) or Path(root)
+
+
 def _stable_service_working_dir() -> str:
     """WorkingDirectory that won't disappear under systemd (HERMES_HOME, else PROJECT_ROOT). cwd is
     irrelevant to ``-m`` resolution, and a pinned transient checkout rots: systemd fails at CHDIR
@@ -3215,7 +3230,7 @@ def _prepare_service_launcher(*, system: bool = False, run_as_user: str | None =
     from hermes_cli._launchers import ENTRY_POINTS, ensure_install_launchers, resolve_store_python
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 
-    root, home = PROJECT_ROOT, get_hermes_home()
+    root, home = _service_install_root(PROJECT_ROOT), get_hermes_home()
     owner = None
     if system:
         username, _group, home_dir, uid = _system_service_identity(run_as_user)
@@ -3247,7 +3262,9 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
-    project_root = PROJECT_ROOT
+    # Bind persisted commands to the install root, never the generation
+    # workspace a venv console script may have been launched from (#131164).
+    project_root = _service_install_root(PROJECT_ROOT)
 
     path_entries = _build_service_path_dirs()
     if not system:
@@ -3424,6 +3441,58 @@ def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
     return True
 
 
+def _generation_tree_in_exec_lines(definition: str) -> str | None:
+    """A dependency-generation tree named by an Exec directive, or ``None``.
+
+    Matches ``installs/<key>/environments/<gen>/{workspace,venv}`` on Exec
+    lines only: the PATH directive may legitimately carry a generation's bin
+    dir for tooling, but no persisted launch command may.
+    """
+    import re
+
+    for line in definition.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("Exec"):
+            continue
+        match = re.search(r"/installs/[^/\s\"']+/environments/[^/\s\"']+/+(?:workspace|venv)(?:/|$)", stripped)
+        if match:
+            return match.group(0)
+    return None
+
+
+def _generation_launcher_in_plist(definition: str) -> str | None:
+    """A launchd ProgramArguments entry launching from a generation tree, or ``None``.
+
+    Tighter than the Exec-line scan: plists also serialize environment values,
+    and a PATH may legitimately carry a generation's bin dir, so only the
+    launcher binary itself — ``{workspace,venv}/(.hermes/)?bin/hermes`` — counts.
+    """
+    import re
+
+    match = re.search(
+        r"/installs/[^/<>\"'\s]+/environments/[^/<>\"'\s]+/+(?:workspace|venv)/+(?:\.hermes/)?bin/hermes\b",
+        definition)
+    return match.group(0) if match else None
+
+
+def _refuse_generation_launcher_service_write(definition: str, kind: str) -> bool:
+    """Refuse (with guidance) when a service definition would launch from a
+    dependency-generation tree. The tree's install key matches nothing
+    recorded, so the supervised service crash-loops with "no dependency
+    environment is committed" until the definition is regenerated from the
+    stable install root (#131164)."""
+    tree = _generation_tree_in_exec_lines(definition) or _generation_launcher_in_plist(definition)
+    if tree is None:
+        return False
+    print(f"✗ Refusing to write the gateway {kind}: its launch commands point into a dependency-generation tree ({tree.rstrip('/')}).")
+    from pm.environments import owning_install_root
+
+    stable = (owning_install_root(PROJECT_ROOT) or PROJECT_ROOT) / ".hermes" / "bin" / "hermes"
+    print("  Generation workspaces are rebuilt and collected; supervisor commands must launch from the stable install root.")
+    print(f"  Re-run the command from the stable launcher (for example: {stable} gateway install).")
+    return True
+
+
 def _retire_hermes_replace_dropin(system: bool = False) -> bool:
     """Remove only the legacy ``--replace`` drop-in written by Hermes."""
     unit_path = get_systemd_unit_path(system=system)
@@ -3464,6 +3533,11 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
 
     # Structural variant: refuse ANY temp-dir HERMES_HOME (manual E2E homes lack the pytest markers).
     if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+        return False
+
+    # Same contract for the launcher root: a generation tree is GC-able and
+    # answers to no committed environment, so it must never be persisted (#131164).
+    if _refuse_generation_launcher_service_write(new_unit, "systemd unit"):
         return False
 
     _prepare_service_launcher(system=system, run_as_user=expected_user)
@@ -3684,6 +3758,8 @@ def systemd_install(
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     new_unit = generate_systemd_unit(system=system, run_as_user=run_as_user)
     if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+        return
+    if _refuse_generation_launcher_service_write(new_unit, "systemd unit"):
         return
     print(f"Installing {scope_label} systemd service to: {unit_path}")
     _prepare_service_launcher(system=system, run_as_user=run_as_user)
