@@ -2,30 +2,21 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { ActionStatusResponse } from "@/lib/api";
 import { Toast } from "@nous-research/ui/ui/components/toast";
-import { sharedGatewayProfiles, sharedGatewayRestartedMessage } from "@/lib/shared-gateway";
+import { sharedGatewayProfiles } from "@/lib/shared-gateway";
 import { useI18n } from "@/i18n";
-import {
-  SystemActionsContext,
-  type SystemAction,
-} from "./system-actions-context";
+import { SystemActionsContext, type SystemAction } from "./system-actions-context";
 
 const ACTION_NAMES: Record<SystemAction, string> = {
   restart: "gateway-restart",
   update: "hermes-update",
 };
 
-export function SystemActionsProvider({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export function SystemActionsProvider({ children }: { children: React.ReactNode }) {
   const [pendingAction, setPendingAction] = useState<SystemAction | null>(null);
   const [activeAction, setActiveAction] = useState<SystemAction | null>(null);
-  const [actionStatus, setActionStatus] = useState<ActionStatusResponse | null>(
-    null,
-  );
+  const [actionStatus, setActionStatus] = useState<ActionStatusResponse | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
-  const { t } = useI18n();
+  const { t, format } = useI18n();
 
   useEffect(() => {
     if (!toast) return;
@@ -47,15 +38,13 @@ export function SystemActionsProvider({
           const ok = resp.exit_code === 0;
           // A restart of the shared multiplexer reconnected every bot on the device: name the count.
           const shared =
-            ok && activeAction === "restart"
-              ? sharedGatewayProfiles(await api.getStatus().catch(() => null))
-              : null;
+            ok && activeAction === "restart" ? sharedGatewayProfiles(await api.getStatus().catch(() => null)) : null;
           if (cancelled) return;
           setToast({
             type: ok ? "success" : "error",
             message: ok
               ? shared
-                ? sharedGatewayRestartedMessage(shared.length)
+                ? format(t.sharedGateway.restarted, { count: shared.length })
                 : t.status.actionFinished
               : `${t.status.actionFailed} (exit ${resp.exit_code ?? "?"})`,
           });
@@ -71,7 +60,7 @@ export function SystemActionsProvider({
     return () => {
       cancelled = true;
     };
-  }, [activeAction, t.status.actionFinished, t.status.actionFailed]);
+  }, [activeAction, format, t.sharedGateway.restarted, t.status.actionFinished, t.status.actionFailed]);
 
   const runAction = useCallback(
     async (action: SystemAction) => {
@@ -91,10 +80,7 @@ export function SystemActionsProvider({
             const cmd = resp.update_command ? `  ${resp.update_command}` : "";
             setToast({
               type: "success",
-              message:
-                (resp.message ??
-                  "Updates don't apply from this dashboard.") +
-                cmd,
+              message: (resp.message ?? "Updates don't apply from this dashboard.") + cmd,
             });
             return;
           }
