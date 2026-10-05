@@ -4086,8 +4086,11 @@ export interface Translations {
     openPreview: string
     openInBrowser: string
     openInExternal: string
+    newBrowserTab: string
     popIn: string
     popOut: string
+    popOutFailed: string
+    popOutOwnerUnavailable: string
     linkHint: string
     sourceLineTitle: string
     source: string
