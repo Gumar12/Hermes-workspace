@@ -350,7 +350,12 @@ del _provider, _alias, _canonical
 
 def _to_decimal(value: Any) -> Optional[Decimal]:
     try:
-        return None if value is None else Decimal(str(value))
+        if value is None:
+            return None
+        # Strip currency symbols / thousands separators: OpenAI-compatible ``/models`` endpoints
+        # may publish rates as "$0.0000006", which Decimal() rejects outright.
+        text = str(value).replace("$", "").replace(",", "").strip()
+        return Decimal(text)
     except Exception:
         return None
 

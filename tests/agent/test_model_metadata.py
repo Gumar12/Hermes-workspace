@@ -2052,3 +2052,57 @@ def test_endpoint_pricing_per_token_quotes_pass_through_unchanged():
     assert float(entry.input_cost_per_million) == pytest.approx(0.6)
     assert float(entry.output_cost_per_million) == pytest.approx(1.2)
     assert float(entry.request_cost) == pytest.approx(0.005)
+
+
+@pytest.mark.parametrize("priced", ["$0.0000006", " $0.0000006 ", "$0.0000006"])
+def test_endpoint_pricing_currency_prefix_is_stripped(priced):
+    """#133376: some OpenAI-compatible /models endpoints quote rates as currency-prefixed strings
+    (e.g. ``"$0.0000006"``). float()/Decimal() raise on the leading ``$`` and the value was
+    dropped, so every rate on the endpoint priced to None and sessions recorded $0.00 / 'unknown'."""
+    from agent import model_metadata as mm
+    from agent import usage_pricing as up
+
+    model = {
+        "id": "m",
+        "pricing": {
+            "prompt": priced,
+            "completion": "$0.0000012",
+            "request": "0",
+            "input_cache_reads": "$0.00000003",
+            "input_cache_writes": "0",
+        },
+    }
+    meta = {"m": mm._endpoint_model_entry(model, "m", None)}
+    entry = up._pricing_entry_from_metadata(meta, "m", source_url="x", pricing_version="openai-compatible-models-api")
+    assert float(entry.input_cost_per_million) == pytest.approx(0.6)
+    assert float(entry.output_cost_per_million) == pytest.approx(1.2)
+    # ``input_cache_reads`` is a cached-input rate key seen in the wild; without the alias it
+    # falls back to the full input rate instead of the cached one.
+    assert float(entry.cache_read_cost_per_million) == pytest.approx(0.03)
+
+
+def test_endpoint_pricing_currency_prefix_per_million_not_inflated():
+    """Control: a ``$``-prefixed quote already in per-million units resolves to that price and is
+    not rescaled by the per-million heuristic (a $0.60/M model must not become $600,000/M)."""
+    from agent import model_metadata as mm
+    from agent import usage_pricing as up
+
+    model = {"id": "m", "pricing": {"prompt": "$0.60", "completion": "$1.20"}}
+    meta = {"m": mm._endpoint_model_entry(model, "m", None)}
+    entry = up._pricing_entry_from_metadata(meta, "m", source_url="x", pricing_version="openai-compatible-models-api")
+    assert float(entry.input_cost_per_million) == pytest.approx(0.6)
+    assert float(entry.output_cost_per_million) == pytest.approx(1.2)
+
+
+def test_rate_coercion_tolerates_currency_and_separators():
+    """The coercion helpers accept currency symbols and thousands separators. Bare numbers are
+    unchanged, and a non-numeric value still fails so callers keep their skip-on-failure path."""
+    from agent.model_metadata import _coerce_rate
+    from agent.usage_pricing import _to_decimal
+
+    assert _coerce_rate("$0.0000006") == pytest.approx(0.0000006)
+    assert _coerce_rate(" 1,200 ") == pytest.approx(1200.0)
+    assert _coerce_rate(0.5) == pytest.approx(0.5)
+    assert float(_to_decimal("$1.20")) == pytest.approx(1.2)
+    assert _to_decimal(None) is None
+    assert _to_decimal("not-a-number") is None
