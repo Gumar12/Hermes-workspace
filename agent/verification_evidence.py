@@ -24,7 +24,7 @@ _MAX_EVIDENCE_AGE_DAYS = 30
 _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
 _AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
-_VERIFY_SCHEMA_VERSION = 1
+_VERIFY_SCHEMA_VERSION = 2
 
 _INTERPRETERS = {"python", "python3", "py", "node", "bash", "sh", "ruby", "perl"}
 # Windows spells the same interpreters `python.exe` / `py.exe` (a venv's absolute Scripts path).
@@ -69,7 +69,8 @@ _SCHEMA_DDL = (
             scope TEXT NOT NULL,
             status TEXT NOT NULL,
             exit_code INTEGER NOT NULL,
-            output_summary TEXT NOT NULL
+            output_summary TEXT NOT NULL,
+            task_id TEXT
         )
         """,
     """
@@ -139,14 +140,60 @@ def _transaction():
     return transaction(_connect())
 
 
+def _stamp_schema_version(conn: sqlite3.Connection) -> None:
+    """Record this module's schema version without ever moving it backwards.
+
+    Every process that opens the ledger runs ``_ensure_schema``, and they do not
+    all carry the same constant: a worker imported before the task_id migration
+    has ``_VERIFY_SCHEMA_VERSION = 1`` and would stamp that over a ledger the
+    migration had already advanced to 2. The marker would then describe a schema
+    one column behind the one the database actually has — the same
+    "documentation that disagrees with reality" failure the column itself had.
+
+    Keeping the higher of the two means an older process leaves the marker alone
+    instead of clobbering it.
+    """
+    row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+    try:
+        stored = int(row[0]) if row else 0
+    except (TypeError, ValueError):
+        stored = 0
+    version = max(stored, _VERIFY_SCHEMA_VERSION)
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+        (str(version),),
+    )
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     for ddl in _SCHEMA_DDL:
         conn.execute(ddl)
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
-        (str(_VERIFY_SCHEMA_VERSION),),
-    )
+    _migrate_legacy_columns(conn)
+    _stamp_schema_version(conn)
     conn.commit()
+
+
+def _migrate_legacy_columns(conn: sqlite3.Connection) -> None:
+    """Add columns that older ledgers were created without.
+
+    ``CREATE TABLE IF NOT EXISTS`` cannot add a column to a database that already
+    exists: the statement matches and is skipped, so the DDL above only ever
+    describes the schema of a FRESH ledger. Without this pass, inserting
+    ``task_id`` into a pre-existing ledger raises "no column named task_id" —
+    inside the ``_quiet()`` wrapper in tools/terminal_tool_result.py, which
+    swallows the error to DEBUG. The worker then keeps running while silently
+    recording nothing.
+
+    Guarded by PRAGMA table_info so the ALTER only runs when the column is
+    genuinely absent; ``add_column_if_missing`` additionally absorbs a
+    concurrent migrator's ``duplicate column name``. Columns are appended, so
+    the physical order of existing columns is untouched.
+    """
+    from hermes_cli.sqlite_util import add_column_if_missing
+
+    existing = frozenset(row[1] for row in conn.execute("PRAGMA table_info(verification_events)"))
+    if "task_id" not in existing:
+        add_column_if_missing(conn, "verification_events", "task_id", "task_id TEXT")
 
 
 def _split_shell_segments(command: str, *, posix: bool = True) -> list[_ShellSegment]:
@@ -487,16 +534,18 @@ def record_verify_run(
 
 def _insert_evidence(evidence: VerificationEvidence) -> dict[str, Any]:
     """Insert a classified evidence row and repoint the workspace state."""
+    from agent.delegation_context import owned_kanban_task
+
     created_at = _utc_now()
     e = evidence
     with _DB_LOCK, _transaction() as conn:
         cur = conn.execute(
             "INSERT INTO verification_events("
             " created_at, session_id, cwd, root, command, canonical_command,"
-            " kind, scope, status, exit_code, output_summary"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " kind, scope, status, exit_code, output_summary, task_id"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (created_at, e.session_id, e.cwd, e.root, e.command, e.canonical_command, e.kind, e.scope,
-             e.status, e.exit_code, e.output_summary),
+             e.status, e.exit_code, e.output_summary, owned_kanban_task() or None),
         )
         if cur.lastrowid is None:
             raise RuntimeError("verification event insert did not return an id")

@@ -676,6 +676,7 @@ class VerificationEvidenceRow(OpenModel):
     status: str | None = None
     exit_code: int | None = None
     output_summary: str | None = None
+    task_id: str | None = None
 
 
 class VerificationStatusInfo(Result):

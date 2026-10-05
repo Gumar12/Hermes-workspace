@@ -952,6 +952,7 @@ export interface VerificationEvidenceRow {
   status?: string | null
   exit_code?: number | null
   output_summary?: string | null
+  task_id?: string | null
   [key: string]: unknown
 }
 export interface ConnectionOperationParams {
