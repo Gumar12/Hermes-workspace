@@ -4,6 +4,7 @@ The identity line lives in ``channel_prompt`` and therefore in the cached-agent 
 must be stable for the life of a session (username only — never a per-message fact).
 """
 
+import re
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
@@ -29,11 +30,31 @@ def mentions_other_participants(adapter: "TelegramAdapter", message: "Message") 
     return False
 
 
+def _own_command_text(own: str, text: str, *, sole_addressee: bool) -> str:
+    """Command text as a DM carries it: the menu's ``/cmd@own`` suffix goes (handlers such as
+    ``/kanban`` re-read the text) and, when we are the sole addressee, so does a closing ``@own``
+    (``/model gpt-5 @own``). The arguments between keep every byte."""
+    if not own:
+        return text
+    handle = re.escape(own)
+    text = re.sub(rf"(?i)^(\s*/[^\s@]+)@{handle}\b[,:\-]*(?=\s|$)", r"\1", text, count=1)
+    return re.sub(rf"(?i)\s+@{handle}\b[,:\-]*\s*$", "", text) if sole_addressee else text
+
+
 def group_trigger_text(adapter: "TelegramAdapter", message: "Message", text: Optional[str]) -> Optional[str]:
     """Strip our own handle only when we are the sole addressee. With other participants named,
     ``@research_bot , @ops_bot are you both listening?`` must not reach us as ``, @ops_bot …``."""
-    if adapter._is_group_chat(message) and mentions_other_participants(adapter, message):
+    own = adapter._current_bot_username()
+    shared = adapter._is_group_chat(message) and mentions_other_participants(adapter, message)
+    # MessageEvent parses command arguments; their separator and mentions must stay intact.
+    if (text or "").lstrip().startswith("/"):
+        return _own_command_text(own, text, sole_addressee=not shared)
+    if shared:
         return text
+    # A supported mention-prefixed command loses only its leading address(es), not its argument bytes.
+    prefix = re.match(rf"(?i)^\s*(?:@{re.escape(own)}\b[,:\-]*\s*)+(?=/)", text or "") if own else None
+    if prefix:
+        return _own_command_text(own, text[prefix.end():], sole_addressee=True)
     return adapter._clean_bot_trigger_text(text)
 
 
