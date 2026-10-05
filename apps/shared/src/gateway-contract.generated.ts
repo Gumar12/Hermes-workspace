@@ -2240,6 +2240,7 @@ export interface SubagentSnapshot {
   goal?: string | null
   delegation_id?: string | null
   model?: string | null
+  reasoning_effort?: string | null
   started_at?: number | null
   status?: SubagentStatus | null
   tool_count?: number | null
@@ -4737,6 +4738,7 @@ export interface SubagentEventPayload {
   delegation_id?: string | null
   depth?: number | null
   model?: string | null
+  reasoning_effort?: string | null
   tool_count?: number | null
   toolsets?: string[] | null
   input_tokens?: number | null
