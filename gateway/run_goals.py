@@ -8,7 +8,6 @@ so ``patch("gateway.run.X")`` keeps intercepting them at call time.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
 import time
 from contextlib import nullcontext, suppress
@@ -106,8 +105,13 @@ class GatewayGoalsMixin:
         prompt is not a reply to it, so it is dropped or every progress bubble and final reply
         would quote that stale message (Telegram DM topics route anchorless via the topic id).
         """
-        source = dataclasses.replace(source, message_id=None) if getattr(source, "message_id", None) else source
-        return MessageEvent(text=text, message_type=MessageType.TEXT, source=source, internal=internal)
+        if getattr(source, "message_id", None):
+            from gateway.session_identity import replace_source
+            source = replace_source(source, message_id=None)
+        return MessageEvent(
+            text=text, message_type=MessageType.TEXT, source=source, internal=internal,
+            preserve_prompt_pins=True,
+        )
 
     def _register_heartbeat_watch(self, quick_key: str, source: Any, session_id: str) -> None:
         """Track the canonical route and start the restart-recoverable poller."""
@@ -315,6 +319,34 @@ class GatewayGoalsMixin:
             adapter = self._delivery_adapter_for(source)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
+                # A human message accepted while the async judge was running may still live in the
+                # adapter debounce buffer. Stage that older work before admitting this synthetic
+                # continuation, otherwise the goal takes the empty pending slot and runs first.
+                flush_debounce = getattr(adapter, "_flush_text_debounce_now", None)
+                if callable(flush_debounce):
+                    await flush_debounce(_quick_key)
+
+                # An incompatible pending head can make the ordinary flush leave the debounce owner
+                # in place. Move that already-accepted owner into the FIFO before the goal as well;
+                # if the transfer cannot be represented safely, prefer the human work and skip this
+                # optional autonomous continuation rather than overtake it.
+                debounce_store = getattr(adapter, "_text_debounce_store", None)
+                debounce_state = None
+                if callable(debounce_store):
+                    with suppress(Exception):
+                        debounce_state = debounce_store().get(_quick_key)
+                if debounce_state is not None:
+                    if not self._try_enqueue_fifo_event(_quick_key, debounce_state.event, adapter):
+                        logger.debug(
+                            "goal continuation: older debounced work could not be staged for %s",
+                            _quick_key,
+                        )
+                        return
+                    with suppress(Exception):
+                        debounce_state.cancel_timer()
+                    with suppress(Exception):
+                        debounce_store().pop(_quick_key, None)
+
                 self._enqueue_fifo(_quick_key, self._synthetic_prompt_event(source, prompt), adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)

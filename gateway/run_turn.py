@@ -2063,10 +2063,16 @@ class GatewayTurnMixin:
 
         # The context prompt render is pinned per session, keyed by a hash of the renderer inputs, so
         # the system prompt cannot drift turn-over-turn; a miss (thread rename, /sethome) re-renders.
-        if event.internal and session_key:
+        preserve_prompt_pins = self._event_preserves_prompt_pins(event)
+        if preserve_prompt_pins and session_key:
             await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
+        _prompt_state = self._peek_session_state(session_key) if session_key else None
+        _previous_ephemeral_pin = (
+            _prompt_state.conversation.ephemeral_pin if _prompt_state is not None else None
+        )
         context_prompt = self._pinned_session_context_prompt(
-            context, _redact_pii, session_key, internal=event.internal,
+            context, _redact_pii, session_key, preserve_pin=preserve_prompt_pins,
+            authoritative_source=(session_entry.origin if preserve_prompt_pins else source),
         )
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
@@ -2098,6 +2104,11 @@ class GatewayTurnMixin:
                 event, source, session_entry, session_key, history, _quick_key, run_generation,
             )
         except TranscriptReadError:
+            # Prompt identity publishes as a coherent context+channel pair immediately before the
+            # model run. A failed transcript read must not leave a newly rendered context half in
+            # memory while the previous channel half remains active.
+            if session_key:
+                self._session_state(session_key).conversation.ephemeral_pin = _previous_ephemeral_pin
             self._clear_session_env(_session_env_tokens)
             return t("gateway.errors.history_unavailable"), _session_env_tokens
 
@@ -2114,6 +2125,8 @@ class GatewayTurnMixin:
             event=event, source=source, history=history, session_key=session_key,
         )
         if message_text is None:
+            if session_key:
+                self._session_state(session_key).conversation.ephemeral_pin = _previous_ephemeral_pin
             return None, _session_env_tokens
 
         message_text, persist_user_message, persist_user_timestamp = (
@@ -2186,14 +2199,17 @@ class GatewayTurnMixin:
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
-            # Internal events reuse the last human turn's channel inputs (see _pinned_channel_inputs).
+            # Internal wakes and synthetic continuations reuse the last authoritative prompt inputs.
+            preserve_prompt_pins = self._event_preserves_prompt_pins(event)
             _turn_channel_prompt, _turn_source = self._pinned_channel_inputs(
-                session_key, event.channel_prompt, source, internal=event.internal,
+                session_key, event.channel_prompt, source, preserve_pin=preserve_prompt_pins,
+                authoritative_source=(session_entry.origin if preserve_prompt_pins else source),
             )
-            if not event.internal:
-                # Persist the coherent context+channel pair before execution: a crash during the
-                # human turn may be followed by an internal startup-resume on the next process.
-                await self._persist_prompt_pins(session_key, _run_start_session_id)
+            # Persist the coherent context+channel pair before execution. For authoritative turns
+            # this records fresh prompt identity. A pin-preserving turn normally no-ops on the same
+            # snapshot, but must durably publish a legitimate config/privacy refresh so a crash
+            # cannot resurrect the pre-change prompt on the next synthetic continuation.
+            await self._persist_prompt_pins(session_key, _run_start_session_id)
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=_turn_source,
                 session_id=_run_start_session_id, session_key=session_key,
@@ -3841,7 +3857,16 @@ class GatewayTurnMixin:
             )
             adapter = self._delivery_adapter_for(source)
             if adapter and pending_event:
-                merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
+                existing = getattr(adapter, "_pending_messages", {}).get(session_key)
+                if (
+                    existing is not None
+                    and self._event_preserves_prompt_pins(existing)
+                    != self._event_preserves_prompt_pins(pending_event)
+                ):
+                    # pending_event was dequeued before the current slot event; keep FIFO order.
+                    self._requeue_before_pending_slot(session_key, pending_event, adapter)
+                else:
+                    merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
             elif adapter and hasattr(adapter, 'queue_message'):
                 adapter.queue_message(session_key, pending)
             return turn_ctx.result_holder[0] or {"final_response": response, "messages": history}
@@ -3854,6 +3879,7 @@ class GatewayTurnMixin:
         next_source, next_message, next_session_key = source, pending, session_key
         # message_type is carried into the recursive call so queued voice turns can stream TTS.
         next_message_id = next_channel_prompt = next_message_type = None
+        next_context_prompt = turn_ctx.context_prompt
         # The raw inbound id keys the delivery-ledger obligation for the follow-up's own final send,
         # distinct from the reply anchor above (None in forum topics). Carry it or two chained
         # topic turns with the same text would collide on one obligation id (queued-final-ledger).
@@ -3889,12 +3915,38 @@ class GatewayTurnMixin:
             next_persist_message = strip_discord_triggering_note(pending_event, next_message)
             next_message_id = self._reply_anchor_for_event(pending_event)
             next_inbound_id = str(pending_event.message_id) if getattr(pending_event, "message_id", None) else None
-            next_channel_prompt, next_source = self._pinned_channel_inputs(
-                next_session_key, pending_event.channel_prompt, next_source, internal=pending_event.internal,
+            next_preserve_prompt_pins = self._event_preserves_prompt_pins(pending_event)
+
+            # A queued authoritative turn is a real next turn, not an overlay on the previous turn's
+            # prompt. Acquire/render both context and channel inputs from its own source and publish
+            # them as one durable pair, matching the direct-turn contract.
+            next_entry = None
+            with suppress(Exception):
+                next_entry = await self.async_session_store.lookup_by_session_key(next_session_key)
+            next_expected_session_id = getattr(next_entry, "session_id", None) or session_id
+            if next_preserve_prompt_pins and next_session_key:
+                await self._rehydrate_prompt_pins(next_session_key, next_expected_session_id)
+            next_context = build_session_context(next_source, self.config, next_entry)
+            from gateway.run import _load_gateway_config
+            next_redact_pii = False
+            with suppress(Exception):
+                next_redact_pii = bool(
+                    (_load_gateway_config().get("privacy") or {}).get("redact_pii", False)
+                )
+            next_authoritative_source = (
+                getattr(next_entry, "origin", None) if next_preserve_prompt_pins else next_source
             )
-            if not pending_event.internal:
-                # A drained human turn re-pins its channel inputs; make them durable like a first turn.
-                await self._persist_prompt_pins(next_session_key, session_id)
+            next_context_prompt = self._pinned_session_context_prompt(
+                next_context, next_redact_pii, next_session_key,
+                preserve_pin=next_preserve_prompt_pins,
+                authoritative_source=next_authoritative_source,
+            )
+            next_channel_prompt, next_source = self._pinned_channel_inputs(
+                next_session_key, pending_event.channel_prompt, next_source,
+                preserve_pin=next_preserve_prompt_pins,
+                authoritative_source=next_authoritative_source,
+            )
+            await self._persist_prompt_pins(next_session_key, next_expected_session_id)
             next_message_type = getattr(pending_event, "message_type", None)
         else:
             # Event-less interrupt/steer follow-ups continue the effective prompt
@@ -3940,7 +3992,7 @@ class GatewayTurnMixin:
             await self._refresh_agent_cache_message_count(session_key, session_id)
 
             followup_result = await self._run_agent(
-                message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
+                message=next_message, context_prompt=next_context_prompt, history=updated_history,
                 source=next_source, session_id=session_id, session_key=next_session_key,
                 run_generation=run_generation, _interrupt_depth=_interrupt_depth + 1,
                 event_message_id=next_message_id, inbound_message_id=next_inbound_id,

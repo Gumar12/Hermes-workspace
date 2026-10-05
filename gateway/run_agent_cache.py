@@ -9,6 +9,7 @@ import logging
 import threading
 import time
 from contextlib import nullcontext, suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -619,12 +620,14 @@ class GatewayAgentCacheMixin:
         return f"[Voice channel now: {vc_now or 'not connected to a voice channel'}]"
 
     async def _rehydrate_prompt_pins(self, session_key: str, expected_session_id: Optional[str]) -> None:
-        """Adopt the durable pin snapshot for an internal turn when this process holds no pins for
-        *session_key* (a restart). Eviction clears only ``ephemeral_pin`` and keeps ``channel_pin``,
-        so an evicted agent still re-renders instead of reviving the snapshot."""
+        """Fill any missing in-memory prompt-pin half from the fenced durable snapshot.
+
+        A restart has neither half; agent eviction intentionally drops only rendered context state.
+        Restoring components independently keeps authoritative source provenance available while the
+        normal change key still decides whether current configuration requires a re-render."""
         state = self._peek_session_state(session_key)
         if state is not None and (
-            state.conversation.ephemeral_pin is not None or state.conversation.channel_pin is not None
+            state.conversation.ephemeral_pin is not None and state.conversation.channel_pin is not None
         ):
             return
         try:
@@ -637,8 +640,14 @@ class GatewayAgentCacheMixin:
         if pin is None:
             return
         conversation = self._session_state(session_key).conversation
-        conversation.ephemeral_pin = (pin["context_key"], pin["context_prompt"], pin["redact_pii"])
-        conversation.channel_pin = (pin["channel_prompt"], pin["parent_chat_id"])
+        # Agent/render eviction can invalidate only one half. Restore each missing half independently
+        # so the surviving channel pin does not prevent recovery of the durable authoritative source.
+        if conversation.ephemeral_pin is None:
+            conversation.ephemeral_pin = (
+                pin["context_key"], pin["context_prompt"], pin["redact_pii"], pin.get("source"),
+            )
+        if conversation.channel_pin is None:
+            conversation.channel_pin = (pin["channel_prompt"], pin["parent_chat_id"])
 
     async def _persist_prompt_pins(self, session_key: Optional[str], expected_session_id: Optional[str]) -> None:
         """Persist this conversation's pins before the agent runs; the store no-ops an unchanged
@@ -654,6 +663,8 @@ class GatewayAgentCacheMixin:
             "context_prompt": ephemeral_pin[1], "redact_pii": ephemeral_pin[2],
             "channel_prompt": channel_pin[0], "parent_chat_id": channel_pin[1],
         }
+        if len(ephemeral_pin) > 3 and isinstance(ephemeral_pin[3], dict):
+            snapshot["source"] = dict(ephemeral_pin[3])
         try:
             await self.async_session_store.set_prompt_pin(
                 session_key, snapshot, expected_session_id=expected_session_id)
@@ -661,52 +672,96 @@ class GatewayAgentCacheMixin:
             # Durability protects cache continuity; a store outage must not block the user turn.
             logger.debug("Failed to persist prompt pin for %s", session_key, exc_info=True)
 
-    def _pinned_session_context_prompt(
-        self, context, redact_pii: bool, session_key: Optional[str], *, internal: bool = False,
-    ) -> str:
-        """Session-context prompt pinned per session: key hit → pinned bytes reused VERBATIM (immune
-        to renderer nondeterminism); key miss → re-render and re-pin (rename, topic edit, /sethome).
+    @staticmethod
+    def _event_preserves_prompt_pins(event: Any) -> bool:
+        """True when *event* reuses established prompt identity without changing authorization."""
+        return bool(
+            getattr(event, "internal", False)
+            or getattr(event, "preserve_prompt_pins", False)
+        )
 
-        ``internal`` events (kanban wakes, delegation completions, watch notifications) carry a
-        source rebuilt from the persisted origin, without chat_name/user_name/message_id. Rendering
-        from it re-keyed the pin, and the next human turn re-keyed it back (A→B→A), rewriting
-        already-sent system bytes each time. An internal event is never a real metadata change, so
-        it reuses an existing pin verbatim (restored by ``_rehydrate_prompt_pins`` after a restart); with
-        no pin yet it renders and pins as usual. The pin records the ``privacy.redact_pii`` it was
-        rendered under: bytes from another privacy policy are never reused, even by an internal
-        event."""
+    def _pinned_session_context_prompt(
+        self, context, redact_pii: bool, session_key: Optional[str], *, preserve_pin: bool = False,
+        authoritative_source: Optional[SessionSource] = None,
+    ) -> str:
+        """Return the session-context prompt while keeping one authoritative source snapshot.
+
+        Preserving events reuse established prompt identity, but current configuration can still
+        legitimately change. Legacy source-less pins are migrated from same-session provenance when
+        available; a current-format source-bearing pin always wins. Without any authoritative
+        provenance, a preserving event keeps the legacy rendered bytes rather than trusting a thin
+        synthetic source.
+        """
         _pin_state = self._peek_session_state(session_key) if session_key else None
         _eph_pin = _pin_state.conversation.ephemeral_pin if _pin_state else None
-        if _eph_pin is not None and _eph_pin[2] != redact_pii:
+        _pinned_source = (
+            _eph_pin[3]
+            if _eph_pin is not None and len(_eph_pin) > 3 and isinstance(_eph_pin[3], dict)
+            else None
+        )
+        _authoritative_snapshot = None
+        if authoritative_source is not None:
+            with suppress(Exception):
+                _authoritative_snapshot = authoritative_source.to_dict()
+
+        # A preserving event has no authoritative source metadata of its own. Re-key against current
+        # configuration using the last authoritative source. Old snapshots did not carry that source,
+        # so migrate them from the durable SessionEntry origin when the caller provides it.
+        if _pinned_source is None and _authoritative_snapshot is not None:
+            _pinned_source = dict(_authoritative_snapshot)
+
+        effective_context = context
+        if preserve_pin and _pinned_source is not None:
+            try:
+                effective_context = replace(context, source=SessionSource.from_dict(_pinned_source))
+            except Exception:
+                _pinned_source = None
+        if preserve_pin and _eph_pin is not None and _pinned_source is None:
+            if _eph_pin[2] == redact_pii:
+                return _eph_pin[1]
             _eph_pin = None
-        if internal and _eph_pin is not None:
+
+        _eph_key = self._ephemeral_change_key(effective_context, redact_pii)
+        if _eph_pin is not None and _eph_pin[2] == redact_pii and _eph_pin[0] == _eph_key:
+            # Provenance belongs to the durable snapshot even on a render cache hit. This upgrades
+            # a legacy source-less snapshot at the first authoritative opportunity.
+            if session_key and _pinned_source is not None and (
+                len(_eph_pin) <= 3 or _eph_pin[3] != _pinned_source
+            ):
+                self._session_state(session_key).conversation.ephemeral_pin = (
+                    _eph_pin[0], _eph_pin[1], _eph_pin[2], dict(_pinned_source),
+                )
             return _eph_pin[1]
-        _eph_key = self._ephemeral_change_key(context, redact_pii)
-        if _eph_pin is not None and _eph_pin[0] == _eph_key:
-            return _eph_pin[1]
-        text = build_session_context_prompt(context, redact_pii=redact_pii)
+        text = build_session_context_prompt(effective_context, redact_pii=redact_pii)
         if session_key:
-            self._session_state(session_key).conversation.ephemeral_pin = (_eph_key, text, redact_pii)
+            source_snapshot = (
+                dict(_pinned_source)
+                if preserve_pin and _pinned_source is not None
+                else context.source.to_dict()
+            )
+            self._session_state(session_key).conversation.ephemeral_pin = (
+                _eph_key, text, redact_pii, source_snapshot,
+            )
         return text
 
     def _pinned_channel_inputs(
-        self, session_key: Optional[str], channel_prompt: Optional[str], source: SessionSource, *, internal: bool,
+        self, session_key: Optional[str], channel_prompt: Optional[str], source: SessionSource, *,
+        preserve_pin: bool = False, authoritative_source: Optional[SessionSource] = None,
     ):
-        """``(channel_prompt, source)`` for this turn's agent run.
-
-        The ephemeral system prompt also appends ``channel_prompt`` and the ``channel_overrides``
-        prompt (looked up by chat/thread/``parent_chat_id``). Internal events carry
-        ``channel_prompt=None`` and a source without ``parent_chat_id``, so they dropped both and
-        toggled the system prompt like the context pin did. Human turns record their inputs;
-        internal turns reuse them (``_rehydrate_prompt_pins`` restores both after a restart)."""
+        """Return channel prompt and routed source using the same prompt identity snapshot."""
         if not session_key:
-            return channel_prompt, source
-        if not internal:
-            self._session_state(session_key).conversation.channel_pin = (channel_prompt, source.parent_chat_id)
             return channel_prompt, source
         state = self._peek_session_state(session_key)
         pin = state.conversation.channel_pin if state else None
-        if pin is None:
+        if not preserve_pin or pin is None:
+            # Cold preservation has no prior channel half. Seed it from same-session authoritative
+            # provenance when available; otherwise the event source is the best-known route.
+            seed_source = authoritative_source if preserve_pin and authoritative_source is not None else source
+            pinned_parent = getattr(seed_source, "parent_chat_id", None)
+            self._session_state(session_key).conversation.channel_pin = (channel_prompt, pinned_parent)
+            if pinned_parent and not source.parent_chat_id:
+                from gateway.session_identity import replace_source
+                source = replace_source(source, parent_chat_id=pinned_parent)
             return channel_prompt, source
         pinned_prompt, pinned_parent = pin
         if pinned_parent and not source.parent_chat_id:
@@ -776,8 +831,8 @@ class GatewayAgentCacheMixin:
         leak class as #25315).
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
-        # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
-        # session-context bytes (the pin) and re-see the current voice-channel state once.
+        # Invalidate rendered prompt bytes with the agent, but keep channel provenance. A preserving
+        # turn can rehydrate the missing source-bearing half and re-key it against current config.
         state = self._peek_session_state(session_key)
         if state is not None:
             state.conversation.ephemeral_pin = None
