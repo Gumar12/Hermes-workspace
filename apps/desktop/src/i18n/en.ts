@@ -2860,6 +2860,7 @@ export const en: Translations = {
       linkCopied: 'Link copied',
       curator: 'Skill curator',
       curatorDesc: 'Background review that archives stale agent-created skills',
+      curatorDescWithBuiltins: 'Background review that archives stale agent-created and bundled skills',
       curatorPaused: 'Paused',
       curatorActive: 'Active',
       curatorDisabled: 'Disabled',

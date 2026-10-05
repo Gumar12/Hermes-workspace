@@ -2443,6 +2443,7 @@ export interface Translations {
       linkCopied: string
       curator: string
       curatorDesc: string
+      curatorDescWithBuiltins: string
       curatorPaused: string
       curatorActive: string
       curatorDisabled: string

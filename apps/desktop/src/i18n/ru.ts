@@ -2026,6 +2026,7 @@ export const ru = defineLocale({
       linkCopied: 'Ссылка скопирована',
       curator: 'Курир навыков',
       curatorDesc: 'Фоновый обзор, архивирующий устаревшие навыки, созданные агентом',
+      curatorDescWithBuiltins: 'Фоновый обзор, архивирующий устаревшие навыки, созданные агентом, и встроенные навыки',
       curatorPaused: 'Приостановлен',
       curatorActive: 'Активен',
       curatorDisabled: 'Отключён',
