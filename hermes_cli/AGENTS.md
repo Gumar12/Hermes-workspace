@@ -205,7 +205,13 @@ never a dir-owner fallback), `gateway_launchd.py::generate_launchd_plist` (`gui/
 profile's `HERMES_HOME` (and `HOME` for the service user) explicitly — a supervisor starts with an
 empty environment, so the env override that makes `-p` work interactively does not exist there. A
 change to install/restart/status regenerates and diffs every kind; both user and system units are
-recorded when both exist. Process liveness is `(pid, start_time)` or the canonical matchers
+recorded when both exist. Persisted supervisor commands bind to the install root only (#131164): a
+`PROJECT_ROOT` inside `installs/<key>/environments/<gen>/` (a GC-able generation tree a venv console
+script launches from) is canonicalized by `gateway.py::_service_install_root` (systemd generate +
+prepare-launcher, launchd run-command wrapping) and refused outright by
+`_refuse_generation_launcher_service_write` at every persisted write (systemd refresh + install,
+launchd refresh/install/start self-heal; Exec-line scan for units, launcher-binary scan for plists,
+whose PATH may legitimately carry a generation's bin dir). Process liveness is `(pid, start_time)` or the canonical matchers
 (`gateway.status.live_gateway_pid_for_home`), never bare PID existence.
 
 ## Nous free tier (`hermes_cli/anon_auth.py`)
