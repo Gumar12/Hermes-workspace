@@ -10,7 +10,7 @@ import logging
 import threading
 
 from agent.interrupt_compat import request_hard_interrupt
-from agent.interrupt_control import interrupt_issuer
+from agent.interrupt_control import interrupt_issuer, interrupt_skip_wording
 from tools.interrupt import set_interrupt
 
 
@@ -94,5 +94,40 @@ def test_gateway_lifecycle_producers_name_a_system_issuer():
         asyncio.run(_abandon_agent_task(
             [sse_agent], SimpleNamespace(done=lambda: True), "SSE client disconnected", await_cancel=False))
         assert interrupt_issuer(sse_agent) == "sse_client_disconnected"
+    finally:
+        set_interrupt(False)
+
+
+def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
+    """A system producer that must stop the turn SOFTLY labels itself via ``tool_reason``. The
+    message-carrying soft path used to hardcode ``user sent a new message``, so a batch-guard abort
+    was booked as a human stop and rendered as the user-stop placeholder (#130207)."""
+    import concurrent.futures
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import agent.tool_executor as te
+
+    agent = _bare_agent()
+    agent._touch_activity = lambda *_: None
+    batch = SimpleNamespace(authorization_gate=te._ConcurrentToolAuthorizationGate(), executor=None, close=lambda: None)
+    prepared = SimpleNamespace(batch=batch, tids=[], future=concurrent.futures.Future())
+    try:
+        # Drive the REAL batch-timeout guard: a prepared terminal call whose worker never settles.
+        with (
+            patch("agent.terminal_approval_batch.take_prepared_call", return_value=prepared),
+            patch.object(te, "_resolve_sequential_tool_timeout", return_value=0.05),
+            patch.object(te, "_emit_terminal_post_tool_call"),
+        ):
+            te._run_sequential_tool_execution_middleware(
+                agent, function_name="terminal", function_args={}, effective_task_id="t",
+                tool_call_id="c1", execute=lambda *_a, **_k: None)
+        assert agent._interrupt_requested is True
+        assert interrupt_issuer(agent) == "terminal_batch_timeout"
+        # No message: gateway/CLI re-queue ``_interrupt_message`` as the user's next turn.
+        assert agent._interrupt_message is None
+        # Rendered verbatim: consumers substitute ``{name}`` with str.replace, never str.format.
+        agent._tool_interrupt_reason = "guard {x}"
+        assert interrupt_skip_wording(agent) == "Turn aborted — guard {x}"
     finally:
         set_interrupt(False)

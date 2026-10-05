@@ -2708,10 +2708,6 @@ def repair_tool_call(agent, tool_name: str) -> str | None:
     return matches[0] if matches else None
 
 
-# Placeholder for an empty non-final message the provider would reject. Kept identical to the stub
-# placeholder in chat_completion_helpers so healed transcripts read consistently.
-_INTERRUPTED_PLACEHOLDER = "[response interrupted]"
-
 # Escalate repeated heals once per session window, then stay quiet. Default threshold; tunable via
 # ``agent.sanitizer_heal_escalation_threshold`` (<= 0 disables).
 # Repeated heals of the same poisoned transcript used to WARNING on every send (#96870).
@@ -2768,6 +2764,7 @@ def fill_empty_non_final_wire_payload(msg: Dict[str, Any], *, is_final: bool) ->
         return False
     if _msg_has_payload(msg):
         return False
+    from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
     msg["content"] = _INTERRUPTED_PLACEHOLDER
     return True
 
@@ -2870,6 +2867,7 @@ def repair_empty_non_final_messages(messages: List[Dict[str, Any]]) -> List[Dict
     deletion) keeps role alternation and tool-call pairing intact. The final message is untouched."""
     if not messages or len(messages) < 2:
         return messages
+    from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
     repaired: List[Dict[str, Any]] = []
     healed = 0
     last_idx = len(messages) - 1
