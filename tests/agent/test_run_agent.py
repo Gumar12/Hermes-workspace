@@ -2363,6 +2363,28 @@ class TestAgentRuntimePostHookOwnershipSync:
         assert all(call["tool_name"] == tool_name for call in post_calls)
 
 
+@pytest.mark.parametrize("path", ["sequential", "concurrent"])
+def test_native_todo_rejection_preserves_state_through_public_executor(agent, path):
+    from tools.todo_tool import TodoStore
+
+    agent._todo_store = TodoStore()
+    agent._todo_store.write([{"id": "1", "content": "Keep", "status": "pending"}])
+    before = agent._todo_store.snapshot()
+    agent.valid_tool_names = {"todo_list"}
+    messages = []
+    execute = getattr(agent, f"_execute_tool_calls_{path}")
+    execute(_mock_assistant_msg(content="", tool_calls=[
+        _mock_tool_call(name="todo_list", arguments=json.dumps({"todos": [
+            {"id": "1", "status": "completed"}, None,
+        ], "merge": True}), call_id="bad-todo"),
+    ]), messages, "test-todo")
+    results = [m for m in messages if m.get("role") == "tool"]
+    assert len(results) == 1, messages
+    result = json.loads(results[0]["content"])
+    assert "list of objects" in result["error"], result
+    assert agent._todo_store.snapshot() == before
+
+
 class TestRuntimeToolTransformToolResult:
     """A registered ``transform_tool_result`` replaces what the model sees for an
     agent-runtime tool, on both the sequential and the concurrent executor path."""

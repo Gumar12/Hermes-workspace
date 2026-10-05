@@ -198,12 +198,30 @@ def todo_tool(todos: Optional[List[Dict[str, Any]]] = None, merge: bool = False,
     else:
         if not isinstance(todos, list):
             return tool_error(f"todos must be a list, got {type(todos).__name__}")
+        # Reject the whole model write before a merge can mutate existing rows.
+        # Trusted snapshot restoration keeps its separate normalization path.
+        if any(not isinstance(item, dict) for item in todos):
+            return tool_error(
+                "todos must be a list of objects. Send task objects, not strings "
+                "or other values. No tasks were changed."
+            )
         items = store.write(todos, merge)
     summary = {"total": len(items)}
     for status in ("pending", "in_progress", "completed", "cancelled"):
         summary[status] = sum(1 for i in items if i["status"] == status)
     return json.dumps({"todos": items, "revision": store.snapshot()["revision"],
                        "summary": summary}, ensure_ascii=False)
+
+
+def handle_todo_call(args: dict, store: Optional[TodoStore] = None) -> str:
+    """Validate the model payload before either dispatcher projects away unknown keys."""
+    unknown = args.keys() - TODO_SCHEMA["parameters"]["properties"].keys()
+    if unknown:
+        return tool_error(
+            f"Unknown todo_list parameter(s): {', '.join(sorted(unknown))}. "
+            "Use todos to write, merge to update by id, or no parameters to read."
+        )
+    return todo_tool(todos=args.get("todos"), merge=args.get("merge", False), store=store)
 
 
 def check_todo_requirements() -> bool:
@@ -318,6 +336,5 @@ from tools.registry import registry, tool_error
 
 registry.register(
     name="todo_list", toolset="todo", schema=TODO_SCHEMA, check_fn=check_todo_requirements,
-    handler=lambda args, **kw: todo_tool(
-        todos=args.get("todos"), merge=args.get("merge", False), store=kw.get("store")),
+    handler=lambda args, **kw: handle_todo_call(args, store=kw.get("store")),
     emoji="📋")
