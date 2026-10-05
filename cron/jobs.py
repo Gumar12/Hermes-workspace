@@ -30,6 +30,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM, FIRE_CLAIM_SKEW_SECONDS, FIRE_CLAIM_TTL_SECONDS
 from cron.env_settings import cron_env_setting
+from cron.skill_lists import _normalize_skill_list, _skill_list_items
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -430,22 +431,6 @@ def _job_output_dir(job_id: str) -> Path:
     ):
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
     return _current_cron_store().output_dir / text
-
-
-def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
-    """Normalize legacy/single-skill and multi-skill inputs into a unique ordered list."""
-    if skills is None:
-        raw_items = [skill] if skill else []
-    elif isinstance(skills, str):
-        raw_items = [skills]
-    else:
-        raw_items = list(skills)
-    normalized: List[str] = []
-    for item in raw_items:
-        text = str(item or "").strip()
-        if text and text not in normalized:
-            normalized.append(text)
-    return normalized
 
 
 def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
