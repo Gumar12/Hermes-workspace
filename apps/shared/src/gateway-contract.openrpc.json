@@ -28701,6 +28701,18 @@
             "default": null,
             "title": "Count"
           },
+          "branch_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Branch Mode"
+          },
           "idempotency_key": {
             "anyOf": [
               {
@@ -28904,6 +28916,18 @@
             ],
             "default": null,
             "title": "Name"
+          },
+          "branch_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Branch Mode"
           },
           "idempotency_key": {
             "anyOf": [
