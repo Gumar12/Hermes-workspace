@@ -3018,6 +3018,7 @@ export interface Translations {
       title: string
       body: (profiles: string) => string
       action: string
+      installAction: string
       guide: string
     }
     noFilterMatches: string
