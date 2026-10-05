@@ -834,13 +834,20 @@ _PER_MILLION_QUOTE_MIN = 0.001
 _TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write")
 
 
+def _coerce_rate(value: Any) -> float:
+    """A published token rate → float. Tolerates currency symbols and thousands separators, which
+    some OpenAI-compatible ``/models`` endpoints emit (e.g. ``"$0.0000006"``);
+    a bare ``float()`` raises on those and silently drops the rate, pricing the model at $0.00."""
+    return float(str(value).replace("$", "").replace(",", "").strip())
+
+
 def _normalize_token_rates(pricing: Dict[str, Any], unit: Any) -> Dict[str, Any]:
     """Rescale the generic path's token rates to per-token strings (the contract usage_pricing
     multiplies by 1e6), the way the Novita/DeepInfra branches already do for their known units."""
     rates: Dict[str, float] = {}
     for key in _TOKEN_RATE_FIELDS:
         try:
-            rates[key] = float(pricing[key])
+            rates[key] = _coerce_rate(pricing[key])
         except (KeyError, TypeError, ValueError):
             continue
     divisor = _PRICING_UNIT_DIVISORS.get(str(unit or "").strip().lower())
@@ -868,8 +875,10 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         "prompt": ("prompt", "input", "input_cost_per_token", "prompt_token_cost"),
         "completion": ("completion", "output", "output_cost_per_token", "completion_token_cost"),
         "request": ("request", "request_cost"),
-        "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "cache_read_cost_per_token"),
-        "cache_write": ("cache_write", "cache_creation", "input_cache_write", "cache_write_cost_per_token"),
+        "cache_read": ("cache_read", "cached_prompt", "input_cache_read", "cache_read_cost_per_token",
+                       "input_cache_reads", "input_cache_read_price", "cached_input"),
+        "cache_write": ("cache_write", "cache_creation", "input_cache_write", "cache_write_cost_per_token",
+                        "input_cache_writes", "input_cache_write_price"),
     }
     for mapping in _iter_nested_dicts(payload):
         normalized = {str(key).lower(): value for key, value in mapping.items()}
