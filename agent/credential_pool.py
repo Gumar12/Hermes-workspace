@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from agent.credential_pool_admin import CredentialPoolAdminMixin
-from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
+from agent.credential_pool_model_cooldowns import (
+    CredentialPoolModelCooldownMixin,
+    MODEL_ENTITLEMENT_BENCH_SECONDS,
+    model_cooldown_until,
+)
 
 import logging
 import os
@@ -129,7 +133,8 @@ SUPPORTED_POOL_STRATEGIES = {
 
 # Cooldowns before retrying an exhausted credential. Transient 401s cool down
 # briefly so single-key setups recover; 429/402/other take an hour.
-# Provider-supplied reset_at timestamps override these defaults.
+# Provider-supplied reset_at timestamps override these defaults, except on a
+# lone non-billing credential — see ``_exhausted_until``.
 EXHAUSTED_TTL_401_SECONDS = 5 * 60
 EXHAUSTED_TTL_429_SECONDS = 60 * 60
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60
@@ -261,6 +266,16 @@ class PooledCredential:
         # surface for core logic; unknown keys are opaque payload. ``provider`` is the row's owner
         # (excluded from ``field_names`` above), never metadata — sweeping it in would write a
         # stray provider name back over the row on to_dict().
+        # Cooldowns persisted before the bounded entitlement policy may outlive the
+        # new maximum; cap them while rehydrating so old auth.json rows recover too.
+        cooldowns = data.get("model_cooldowns")
+        if isinstance(cooldowns, dict):
+            deadline = time.time() + MODEL_ENTITLEMENT_BENCH_SECONDS
+            data["model_cooldowns"] = {
+                model: min(float(until), deadline)
+                for model, until in cooldowns.items()
+                if isinstance(until, (int, float))
+            }
         data["extra"] = {
             k: v for k, v in payload.items() if k not in field_names and k != "provider" and v is not None
         }
@@ -369,6 +384,17 @@ def _is_manual_source(source: str) -> bool:
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
 
 
+def _is_billing_failure(error_code: Optional[int], failure_reason: Optional[str]) -> bool:
+    """Confirmed billing: a quick retry cannot help, so the full bench stands.
+
+    One home for the rule so the TTL bench and the absolute-reset clamp cannot
+    drift apart. ``billing_unverified`` is deliberately NOT billing here — the
+    same 400 also covers a content-filter rejection on a healthy credential
+    (#82154), and only a true 402 outranks the status.
+    """
+    return error_code == 402 or failure_reason == FAILURE_REASON_BILLING
+
+
 def _exhausted_ttl(
     error_code: Optional[int],
     *,
@@ -393,10 +419,20 @@ def _exhausted_ttl(
     base = EXHAUSTED_TTL_429_SECONDS if error_code == 429 else EXHAUSTED_TTL_DEFAULT_SECONDS
     if failure_reason == FAILURE_REASON_BILLING_UNVERIFIED and error_code != 402:
         return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
-    is_billing = error_code == 402 or failure_reason == FAILURE_REASON_BILLING
-    if sole_credential and not is_billing:
+    if sole_credential and not _is_billing_failure(error_code, failure_reason):
         return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
     return base
+
+
+def _ttl_bench_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
+    """Epoch of the TTL bench for an exhausted entry, or ``None`` without a status stamp."""
+    if not entry.last_status_at:
+        return None
+    return entry.last_status_at + _exhausted_ttl(
+        entry.last_error_code,
+        sole_credential=sole_credential,
+        failure_reason=entry.failure_reason,
+    )
 
 
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:
@@ -466,18 +502,35 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
 
 
 def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
+    """Epoch when an exhausted entry may re-enter rotation, else ``None``.
+
+    Clamp rule: a sole non-billing credential's persisted absolute
+    ``last_error_reset_at`` is capped at the TTL bench, so a subscription-period
+    429 (monthly/weekly window) cannot bench it for the whole window (#119163).
+    Confirmed billing and pools with siblings keep the provider-stated reset.
+
+    A persisted absolute ``last_error_reset_at`` is honoured while it stays
+    inside the TTL bench. On a lone credential it may not: a subscription-period
+    429 (monthly/weekly window) writes a reset days out, and with nothing to
+    rotate to the sole-credential short cooldown is the branch that must apply
+    (#119163) — one probe per bench against a single key is cheap, a whole
+    billing period of silence is not. Confirmed billing keeps the provider's
+    reset (a 60s retry on a spent account just re-fails), as does a pool with
+    siblings.
+    """
     if entry.last_status != STATUS_EXHAUSTED:
         return None
     reset_at = _parse_absolute_timestamp(entry.last_error_reset_at)
-    if reset_at is not None:
-        return reset_at
-    if entry.last_status_at:
-        return entry.last_status_at + _exhausted_ttl(
-            entry.last_error_code,
-            sole_credential=sole_credential,
-            failure_reason=entry.failure_reason,
-        )
-    return None
+    bench_until = _ttl_bench_until(entry, sole_credential=sole_credential)
+    if reset_at is None:
+        return bench_until
+    if (
+        bench_until is not None
+        and sole_credential
+        and not _is_billing_failure(entry.last_error_code, entry.failure_reason)
+    ):
+        return min(reset_at, bench_until)
+    return reset_at
 
 
 # --- Custom (OpenAI-compatible) endpoint pool keys ---
@@ -1037,15 +1090,23 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         with self._lock:
             return bool(self._entries)
 
-    def has_available(self, *, model: Optional[str] = None) -> bool:
+    def has_available(self, *, model: Optional[str] = None, any_model: bool = False) -> bool:
         """True if at least one entry is not currently in exhaustion cooldown.
+
+        ``any_model`` answers the provider-level question — "can this
+        credential serve anything" — where a model-scoped cooldown must not
+        count: it benches one model, not the credential (#127682).
+        Credential-wide exhaustion still does. Callers routing a real request
+        keep the default, whose conservative unscoped answer is what keeps a
+        benched model out of unnamed-model rotation.
 
         ``_available_entries`` is not read-only (it prunes aged-out DEAD
         manual entries and persists), so it must run under ``self._lock``
         like every other caller or a probe can race a concurrent rotation.
         """
         with self._lock:
-            available, _pending = self._available_entries(model=model)
+            available, _pending = self._available_entries(
+                model=None if any_model else model, ignore_model_cooldowns=any_model)
             return bool(available)
 
     def lift_reopened_cooldowns(self, *, model: Optional[str] = None) -> bool:
@@ -2071,6 +2132,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
 
     def _available_entries(
         self, *, clear_expired: bool = False, refresh: bool = False, model: Optional[str] = None,
+        ignore_model_cooldowns: bool = False,
     ) -> Tuple[List[PooledCredential], List[PooledCredential]]:
         """Return (available, pending_refresh) for entries not in cooldown.
 
@@ -2080,6 +2142,9 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         xai-oauth), which are returned as *pending_refresh* so the caller
         refreshes them outside the lock instead of stalling every pool
         consumer during cross-process flock acquisition + OAuth network I/O.
+        *ignore_model_cooldowns* skips the per-model bench — for
+        provider-level "can this credential serve anything" probes (#127682),
+        never for routing a request.
         """
         now = time.time()
         cleared_any = False
@@ -2093,7 +2158,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             # unhydrated duplicate as an empty key.
             if entry.auth_type == AUTH_TYPE_API_KEY and not entry.runtime_api_key:
                 continue
-            synced = self._resync_stale_entry(entry)
+            synced = self._resync_model_cooldown_clear(self._resync_stale_entry(entry))
             if synced is not entry:
                 entry = synced
                 cleared_any = True
@@ -2116,7 +2181,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                         entries_to_prune.append(entry.id)  # can't mutate while iterating
                         cleared_any = True
                 continue
-            if model_cooldown_until(entry, model) is not None:
+            if not ignore_model_cooldowns and model_cooldown_until(entry, model) is not None:
                 continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry, sole_credential=sole_credential)
@@ -2222,6 +2287,29 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 available, _pending = self._available_entries(clear_expired=True, refresh=True, model=model)
         return next((e for e in available if e.id == credential_id), None)
 
+    def clear_billing_benches(self) -> int:
+        """Clear every ``STATUS_EXHAUSTED`` bench attributed to billing; return how many.
+
+        A credit exhaustion — unlike a rate-limit window — can be cured mid-session by a
+        portal top-up at any moment (#126818): the full bench would keep a live session
+        pinned to its (paid) fallback long after the primary is funded again. Only
+        billing-attributed benches clear here; rate-limit windows, auth failures and
+        unverified-billing benches keep their cooldowns."""
+        with self._lock:
+            cleared_ids = []
+            for entry in self._entries:
+                if entry.last_status != STATUS_EXHAUSTED or entry.failure_reason != FAILURE_REASON_BILLING:
+                    continue
+                self._adopt(
+                    entry, persist=False, **_MARK_OK, status_cleared_at=time.time(),
+                    extra={k: v for k, v in entry.extra.items() if k != "failure_reason"},
+                )
+                cleared_ids.append(entry.id)
+            if cleared_ids:
+                # Declare the reset so the disk-recency merge cannot restore the bench.
+                self._persist(status_cleared_ids=cleared_ids)
+            return len(cleared_ids)
+
     # ---- rotation ----------------------------------------------------------
 
     def _identify_failed_entry(
@@ -2255,7 +2343,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
         return entry
 
-    def _rotate_unmatched(self) -> Optional[PooledCredential]:
+    def _rotate_unmatched(self, *, model: Optional[str] = None) -> Optional[PooledCredential]:
         """Rotate without marking anything when the failed identity matches no entry.
 
         Falling through to current()/_select_unlocked() would bench an
@@ -2267,7 +2355,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         available entries, then surface the error; no cooldown is written.
         """
         self._unmatched_rotation_streak += 1
-        available_count = len(self._available_entries()[0])
+        available_count = len(self._available_entries(model=model)[0])
         if self._unmatched_rotation_streak > max(available_count, 1):
             logger.warning(
                 "credential pool: failed credential identity matched no "
@@ -2284,8 +2372,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             self.provider,
         )
         self._current_id = None
-        next_entry, _pending = self._select_unlocked(refresh=False)
-        if next_entry is not None and len(self._available_entries()[0]) == 1:
+        next_entry, _pending = self._select_unlocked(refresh=False, model=model)
+        if next_entry is not None and len(self._available_entries(model=model)[0]) == 1:
             # A single-entry pool cannot rotate: returning its only entry would
             # report a recovery without changing the credential, and the
             # caller retries the same 401 indefinitely.
@@ -2308,11 +2396,11 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             identity_supplied = bool(credential_id or api_key_hint)
             entry = self._identify_failed_entry(credential_id, api_key_hint)
             if entry is None and identity_supplied:
-                return self._rotate_unmatched()
+                return self._rotate_unmatched(model=model)
             # A real entry was identified — any prior unmatched streak is stale.
             self._unmatched_rotation_streak = 0
             if entry is None:
-                entry = self._current_unlocked() or self._select_unlocked(refresh=False)[0]
+                entry = self._current_unlocked() or self._select_unlocked(refresh=False, model=model)[0]
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
@@ -2354,7 +2442,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             else:
                 logger.info("credential pool: marking %s exhausted (status=%s), rotating", _label, status_code)
             self._current_id = None
-            next_entry, _pending = self._select_unlocked(refresh=False)
+            next_entry, _pending = self._select_unlocked(refresh=False, model=model)
             if next_entry is not None and next_entry.id == entry.id:
                 # No-recovery guard (#97315): selection handed back the very entry that was
                 # just marked (the auth-store sync adopted fresher tokens, or a quota probe
