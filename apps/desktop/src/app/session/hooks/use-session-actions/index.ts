@@ -202,6 +202,7 @@ import {
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
   toBranchMessages,
+  toBranchSeedMessages,
   upsertOptimisticSession,
   upsertUnlistedSessionOwner
 } from './utils'
@@ -2842,7 +2843,7 @@ export function useSessionActions({
               : branchMessages.length
                 ? requestBranchGateway<SessionCreateResponse>('session.create', {
                     ...createParams,
-                    messages: branchMessages.map(({ content, role }) => ({ content, role }))
+                    messages: toBranchSeedMessages(branchMessages)
                   })
                 : requestBranchGateway<SessionCreateResponse>('session.branch_stored', createParams).catch(
                     async err => {
@@ -2858,7 +2859,7 @@ export function useSessionActions({
 
                       return requestBranchGateway<SessionCreateResponse>('session.create', {
                         ...createParams,
-                        messages: messages.map(({ content, role }) => ({ content, role }))
+                        messages: toBranchSeedMessages(toBranchMessages(toChatMessages(messages)))
                       })
                     }
                   )
