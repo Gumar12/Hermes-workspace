@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DiffCount } from '@/components/ui/diff-count'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { TabDropdown } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
 import type { HermesReviewScope } from '@/global'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
@@ -63,6 +64,18 @@ export function ReviewPane() {
   // only apply to the uncommitted scope; branch / last-turn are read-only.
   const isUncommitted = scope === 'uncommitted'
 
+  const scopeOptions: { id: HermesReviewScope; label: string }[] = [
+    { id: 'uncommitted', label: c.scopeUncommitted },
+    { id: 'branch', label: c.scopeBranch },
+    { id: 'lastTurn', label: c.scopeLastTurn }
+  ]
+
+  const selectScope = (id: HermesReviewScope) => {
+    $reviewScope.set(id)
+    clearReviewSelection()
+    void refreshReview()
+  }
+
   const selectedFile = files.find(file => file.path === selectedPath)
   const hasFiles = files.length > 0
   // `{ path: null }` → revert all; `{ path: '…' }` → revert one file.
@@ -89,20 +102,6 @@ export function ReviewPane() {
                 says "review", so the zone header hides it (styles.css). */}
             <SidebarPanelLabel data-pane-self-label="">{c.review}</SidebarPanelLabel>
           </div>
-          <SegmentedControl<HermesReviewScope>
-            className="mr-1"
-            onChange={id => {
-              $reviewScope.set(id)
-              clearReviewSelection()
-              void refreshReview()
-            }}
-            options={[
-              { id: 'uncommitted', label: c.scopeUncommitted },
-              { id: 'branch', label: c.scopeBranch },
-              { id: 'lastTurn', label: c.scopeLastTurn }
-            ]}
-            value={scope}
-          />
           <Tip label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}>
             <Button
               aria-label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}
@@ -154,6 +153,31 @@ export function ReviewPane() {
             <Codicon name="close" size="0.8125rem" />
           </Button>
         </RightSidebarSectionHeader>
+      )}
+
+      {(loading || isRepo) && (
+        // Own row: label + tabs + icons can't share the 28px header in a pane
+        // that narrows to 10rem. Below the tabs' natural width, collapse to the
+        // app's narrow-width tab dropdown rather than ellipsizing every option.
+        <div className="@container shrink-0 px-2 pb-1.5" data-suppress-pane-reveal-side="">
+          <SegmentedControl<HermesReviewScope>
+            className="hidden w-full auto-cols-[minmax(0,auto)] @[13.5rem]:grid [&>button]:px-2"
+            onChange={selectScope}
+            options={scopeOptions}
+            value={scope}
+          />
+          <div className="flex h-[1.5625rem] items-center pl-1.5 @[13.5rem]:hidden">
+            <TabDropdown
+              align="start"
+              items={scopeOptions.map(option => ({
+                active: option.id === scope,
+                id: option.id,
+                label: option.label,
+                onSelect: () => selectScope(option.id)
+              }))}
+            />
+          </div>
+        </div>
       )}
 
       {loading || isRepo ? (
