@@ -2151,6 +2151,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             from agent.turn_recovery import reset_codex_reasoning_replay
             reset_codex_reasoning_replay(agent)
             agent._fallback_activated = True
+            # Turn-scoped log of WHY each rung was left (#133361): the restart-limit finalizer
+            # re-stamps the turn's failure_reason from it. ``None`` (unattributed activation)
+            # must survive as None — a bogus reason would read as a provider verdict.
+            if getattr(agent, "_fallback_activation_reasons", None) is None:
+                agent._fallback_activation_reasons = []
+            agent._fallback_activation_reasons.append(
+                reason.value if reason is not None else None)
 
             _rebind_fallback_credential_pool(agent, fb_provider, fb_model)
             if fb_provider == "moa":
