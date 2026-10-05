@@ -6304,13 +6304,9 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     if not isinstance(task_config, dict):
         task_config = {}
     try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
-        for _entry in get_plugin_auxiliary_tasks():
-            if _entry.get("key") == task:
-                _defaults = _entry.get("defaults") or {}
-                if isinstance(_defaults, dict):
-                    return {**_defaults, **task_config}
-                break
+        from hermes_cli.plugins import _ensure_plugins_discovered, resolve_plugin_auxiliary_task_config
+        if task in _ensure_plugins_discovered()._aux_tasks:
+            return resolve_plugin_auxiliary_task_config(task, aux)
     except Exception:
         pass  # plugin discovery failure must not break aux task config reads
     return task_config
