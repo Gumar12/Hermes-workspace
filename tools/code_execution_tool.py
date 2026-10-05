@@ -788,9 +788,10 @@ def execute_code(
     from tools.code_kernel import execute_in_session_kernel
     _cfg = _load_config()
     _mode = _get_execution_mode()
+    _cwd = _resolve_child_cwd(_mode, "", task_id=task_id or "")
     return record_execution_backend("code", "local", execute_in_session_kernel(
-        code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
-        child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
+        code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode, _cwd),
+        child_cwd=_cwd,
         sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
@@ -841,8 +842,11 @@ DEFAULT_EXECUTION_MODE = "project"
 
 
 def _get_execution_mode() -> str:
-    """``code_execution.mode`` (invalid → default with a warning). ``project``: session cwd + active
-    venv python; ``strict``: isolated temp dir + ``sys.executable``. Scrubbing/whitelist apply to both."""
+    """Resolve mode (invalid → default with a warning). Project uses the session cwd and
+    backend activation, or an operator-trusted cwd-local venv if no activated executable
+    is found. A failed activation probe falls directly back to Hermes Python.
+    Strict uses an isolated temp dir and Hermes Python. Both scrub env and restrict tools.
+    """
     cfg_value = str(_load_config().get("mode", DEFAULT_EXECUTION_MODE)).strip().lower()
     if cfg_value in EXECUTION_MODES:
         return cfg_value
@@ -894,11 +898,14 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         )
     else:
         cwd_note = (
-            "Scripts run in the session's working directory. Interpreter: "
-            "the project's activated venv/conda python when one is active "
-            "(VIRTUAL_ENV/CONDA_PREFIX — matches terminal()); otherwise "
-            "Hermes's own python (the common case — stdlib plus Hermes's "
-            "deps; check `import x` before relying on project packages)."
+            "Scripts run in the session's working directory. Local interpreter: "
+            "VIRTUAL_ENV/CONDA_PREFIX from the backend environment; if no activated "
+            "executable is found, a .venv/venv in that directory if it belongs to an "
+            "operator-selected Git workspace. A failed activation probe falls directly "
+            "back to Hermes's own Python; discovered candidates must be Python 3.8+ "
+            "or discovery continues, falling back to Hermes's own Python. "
+            "Terminal activation and PATH are not synchronized; check imports before "
+            "relying on project packages."
         )
     # Remote hosts that fail open to per-call are not worth schema words; the result's
     # `kernel` field tells the truth per call.
