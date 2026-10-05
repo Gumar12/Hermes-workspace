@@ -66,6 +66,28 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  memoryDiscovery: {
+    installed: string
+    availableToInstall: string
+    installationRequired: string
+    reviewInstall: string
+    exploreAll: string
+    missing: string
+    installConsent: string
+    builtin: string
+    providerSettings: string
+    configureElsewhere: string
+    notReady: string
+    useFailed: string
+
+    active: string
+    useProvider: string
+    loadFailed: string
+    ownerChanged: string
+    notDiscovered: string
+    installedNotice: string
+    backToMemory: string
+  }
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: {
     consentTitle: string
