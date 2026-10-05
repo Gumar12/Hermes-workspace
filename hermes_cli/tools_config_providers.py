@@ -338,6 +338,37 @@ def _web_tier_matches(provider: dict, config: dict) -> bool:
     return row_tier == ("paid" if has_key else "free")
 
 
+def _web_backend_active(provider: dict, config: dict) -> bool:
+    """True when a web row's ``web_backend`` serves either capability as configured.
+
+    ``web_search``/``web_extract`` resolve their own ``web.search_backend`` /
+    ``web.extract_backend`` override first and only then fall back to the shared
+    ``web.backend`` (``tools/web_tools.py``: ``_get_search_backend`` /
+    ``_get_extract_backend``), so a vendor serving one capability through its
+    override is in use even when the shared key names a different one. An override
+    shadows the shared key for its own capability only, so the shared key still
+    serves whichever capability was left without one. Managed Nous rows never reach
+    here — they answer in ``_managed_provider_active``.
+    """
+    backend = provider.get("web_backend")
+    if not backend:
+        return False
+    raw_web_cfg = config.get("web")
+    web_cfg = raw_web_cfg if isinstance(raw_web_cfg, dict) else {}
+    # Dispatch lower-cases and strips the configured name; compare the same way.
+    def _name(key: str) -> str:
+        value = web_cfg.get(key)
+        return value.lower().strip() if isinstance(value, str) else ""
+
+    shared = _name("backend")
+    serving = {
+        _name(key) or shared  # per-capability override wins, else the shared key
+        for key in ("search_backend", "extract_backend")
+    }
+    serving.discard("")
+    return backend in serving and _web_tier_matches(provider, config)
+
+
 # Managed-row marker -> (config section, key) the pick writes, in check order.
 _MANAGED_SELECTION_KEYS: tuple[tuple[str, str, str], ...] = (
     ("tts_provider", "tts", "provider"), ("stt_provider", "stt", "provider"),
@@ -448,7 +479,7 @@ _ACTIVE_CHECKS: tuple[tuple[str, Callable[[dict, dict], bool]], ...] = (
     ("stt_provider", lambda p, c: (cfg_get(c, "stt", "provider") or "local") == p["stt_provider"]),
     ("browser_provider", _browser_provider_active),
     ("browser_backend", _browser_backend_active),
-    ("web_backend", lambda p, c: cfg_get(c, "web", "backend") == p["web_backend"] and _web_tier_matches(p, c)),
+    ("web_backend", _web_backend_active),
     ("computer_use_backend", lambda p, c: cfg_get(c, "computer_use", "backend") == p["computer_use_backend"]),
     ("imagegen_backend", _imagegen_backend_active))
 
