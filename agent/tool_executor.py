@@ -31,6 +31,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
+from agent.interrupt_control import interrupt_skip_wording
 from agent.message_sanitization import coalesce_tool_call_id
 from agent.inline_tool_executors import (
     INLINE_TOOL_EXECUTORS,
@@ -302,7 +303,7 @@ class _ToolCallRef:
 
     def emit_cancelled(self, agent, start_time: float) -> str:
         """Synthesize the ``cancelled`` result for a KeyboardInterrupt mid-tool and emit its hook."""
-        message = "Tool execution cancelled by user interrupt"
+        message = f"Tool execution cancelled. {interrupt_skip_wording(agent)}"
         result = json.dumps({"error": message, "status": "cancelled"}, ensure_ascii=False)
         self.emit_post(
             agent, result, duration_ms=int((time.time() - start_time) * 1000),
@@ -336,12 +337,12 @@ def _append_skipped_tool_results(
     append and returns False on the first failed flush when ``stop_on_flush_failure``."""
     for tc in tool_calls:
         name = _tc_name(tc)
-        result = content.format(name=name)
+        result = content.replace("{name}", name)
         messages.append(make_tool_result_message(name, result, _pairing_tool_call_id(tc), effect_disposition="none"))
         if hook_error_type is not None:
             _ToolCallRef(name, {}, effective_task_id, (hook_id or _pairing_tool_call_id)(tc), []).emit_post(
                 agent, result,
-                status="cancelled", error_type=hook_error_type, error_message="Tool execution skipped due to user interrupt",
+                status="cancelled", error_type=hook_error_type, error_message=f"Tool execution skipped. {interrupt_skip_wording(agent)}",
             )
         if flush_stage is not None:
             flushed = _flush_session_db_after_tool_progress(agent, messages, stage=f"{flush_stage} {name}")
@@ -974,7 +975,12 @@ def _run_sequential_tool_execution_middleware(
             # A timed-out shell may still be unwinding. Never release a later
             # prepared command into overlapping execution.
             prepared.batch.close()
-            agent.interrupt("terminal batch tool did not complete")
+            # Label the abort as the batch guard's own, not a user stop: without an explicit
+            # ``tool_reason`` the soft path books this as "user sent a new message" (#130207).
+            agent.interrupt(
+                "terminal batch tool did not complete",
+                tool_reason="terminal batch aborted: call timed out",
+            )
         future.cancel()
         if state == "timeout":
             _interrupt_worker_tids(agent, worker_tid)
@@ -1501,8 +1507,8 @@ def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeou
         outcome = dict(duration_ms=int((timeout_s or 0.0) * 1000), status="timeout", error_type="tool_timeout", error_message=function_result)
         tool_duration, effect_disposition = float(timeout_s or 0.0), "unknown"
     elif agent._interrupt_requested:
-        function_result = f"[Tool execution cancelled — {ref.name} was skipped due to user interrupt]"
-        outcome = dict(status="cancelled", error_type="keyboard_interrupt", error_message="Tool execution cancelled by user interrupt")
+        function_result = f"[Tool execution cancelled — {ref.name} was skipped. {interrupt_skip_wording(agent)}]"
+        outcome = dict(status="cancelled", error_type="keyboard_interrupt", error_message=f"Tool execution cancelled. {interrupt_skip_wording(agent)}")
         tool_duration, effect_disposition = 0.0, None
     else:
         function_result = f"Error executing tool '{ref.name}': thread did not return a result"
@@ -1561,7 +1567,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         print(f"{agent.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
         _append_skipped_tool_results(
             agent, messages, tool_calls, effective_task_id,
-            content="[Tool execution cancelled — {name} was skipped due to user interrupt]",
+            content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",
             hook_error_type="user_interrupt",
             flush_stage="cancelled tool result",
             stop_on_flush_failure=False,
@@ -1758,7 +1764,7 @@ def _run_sequential_call(
             agent.interrupt("keyboard interrupt")
         _append_skipped_tool_results(
             agent, messages, remaining_calls, ref.task_id,
-            content="[Tool execution cancelled — {name} was skipped due to keyboard interrupt]",
+            content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",
         )
         raise
     except Exception as tool_error:
@@ -1852,7 +1858,7 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             if not _skip_remaining_sequential(
                 agent, messages, tool_calls[i - 1:], effective_task_id,
                 notice="tool call(s)",
-                content="[Tool execution cancelled — {name} was skipped due to user interrupt]",
+                content=f"[Tool execution cancelled — {{name}} was skipped. {interrupt_skip_wording(agent)}]",
                 hook_error_type="user_interrupt",
                 hook_id=lambda tc: getattr(tc, "id", "") or "",
                 flush_stage="cancelled tool result",
@@ -1885,7 +1891,7 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             if not _skip_remaining_sequential(
                 agent, messages, tool_calls[i:], effective_task_id,
                 notice="remaining tool call(s)",
-                content="[Tool execution skipped — {name} was not started. User sent a new message]",
+                content=f"[Tool execution skipped — {{name}} was not started. {interrupt_skip_wording(agent)}]",
                 flush_stage="skipped tool result",
             ):
                 return
