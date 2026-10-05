@@ -977,9 +977,14 @@ def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | Non
     return None
 
 
-def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str]) -> bool:
-    """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv after exit."""
-    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv))
+def launch_detached_gateway_restart_by_cmdline(old_pid: int, run_argv: list[str], *, host: bool | None = None) -> bool:
+    """Relaunch a gateway with no profile→PID-file mapping by replaying its captured argv after exit.
+
+    ``host`` is the identity the caller settled while the gateway was still live. Pass it whenever the
+    replay happens after the process is gone: by then the live evidence ``_restart_argv_is_host_gateway``
+    reads (the published rendezvous record) has died with it, and ``None`` re-infers from what is left.
+    """
+    return old_pid > 0 and bool(run_argv) and _spawn_gateway_restart_watcher(old_pid, list(run_argv), host=host)
 
 
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
@@ -1009,9 +1014,14 @@ def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
     1. this process's own settled multiplex verdict (``is_multiplex_active`` — set by
        boot after ``resolve_multiplex_mode``; the gateway replaying its own restart);
     2. the live host gateway's published rendezvous record (proof the RUNNING owner
-       settled multiplex — the update/fleet process replaying a foreign gateway's
-       captured argv has no settled flag of its own);
+       settled what it serves — the update/fleet process replaying a foreign gateway's
+       captured argv has no settled flag of its own): a multiplex roster, or exactly
+       the default profile (a single-profile host is still the host);
     3. only then the compatibility default-root comparison.
+
+    Steps 2-3 only hold while the gateway is alive or the caller sits on the default
+    root, so callers that replay after the process is gone settle this before stopping
+    it and pass ``host=`` explicitly.
     """
     if not argv or "gateway" not in argv:
         return False
@@ -1036,8 +1046,10 @@ def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
     try:
         from gateway import host_rendezvous as hr
         record = hr.read_record(hr.ROLE_GATEWAY)
-        if record is not None and hr.liveness_is_proven(record) and len(record.profiles) > 1:
-            return True
+        if record is not None and hr.liveness_is_proven(record):
+            served = tuple(record.profiles)
+            if len(served) > 1 or served == ("default",):
+                return True
     except Exception:
         pass
     try:
@@ -1053,6 +1065,25 @@ def _host_gateway_watcher_env() -> dict[str, str]:
     env = host_gateway_child_env()
     env.pop("_HERMES_GATEWAY", None)
     return env
+
+
+def _pin_host_profile_selector(argv: list[str]) -> list[str]:
+    """Insert ``--profile default`` before the ``gateway`` subcommand when *argv* names no profile.
+
+    A selector-less ``gateway run`` resolves its home from the sticky ``active_profile`` file
+    (#22502) unless a supervisor marker is set, and a detached restart watcher sets none. With
+    ``hermes profile use <named>`` in effect, the respawned host gateway re-homed into that profile
+    and was refused ("Profile '<named>' does not get a gateway of its own"), so every ``hermes
+    update`` left the multiplex host down while reporting the restart as done. Pinning the
+    selector keeps the respawn on the host identity the caller already settled.
+    """
+    if any(part in ("--profile", "-p") or part.startswith("--profile=") for part in argv):
+        return list(argv)
+    try:
+        idx = argv.index("gateway")
+    except ValueError:
+        return list(argv)
+    return [*argv[:idx], "--profile", "default", *argv[idx:]]
 
 
 def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: bool | None = None) -> bool:
@@ -1163,13 +1194,16 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str], *, host: b
                      watcher_timeout_literal=json.dumps(GATEWAY_RESTART_WATCHER_TIMEOUT_S),
                      project_root_literal=json.dumps(str(PROJECT_ROOT)))
 
+    is_host = _restart_argv_is_host_gateway(run_argv) if host is None else host
+    if is_host:
+        # The respawn has no supervisor marker, so a bare ``gateway run`` would follow the sticky
+        # active_profile into a named profile and be refused; name the host explicitly.
+        run_argv = _pin_host_profile_selector(run_argv)
     watcher_argv = [sys.executable, "-c", watcher, str(old_pid), *run_argv]
     devnull = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     # Host respawn must not inherit a named launcher's dotenv. The watcher copies os.environ
     # into the gateway child, so the scrub has to be the watcher's own environ.
-    watcher_env = _host_gateway_watcher_env() if (
-        _restart_argv_is_host_gateway(run_argv) if host is None else host
-    ) else None
+    watcher_env = _host_gateway_watcher_env() if is_host else None
     popen_env = {"env": watcher_env} if watcher_env is not None else {}
     # Same detach for the watcher itself, so closing the terminal doesn't kill it.
     try:
