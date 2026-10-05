@@ -3678,6 +3678,8 @@ export interface Translations {
     noOutput: string
     cancelling: string
     cancelInstall: string
+    cancelledTitle: string
+    cancelledDesc: string
     transcriptSaved: string
     copiedOutput: string
     copyOutput: string
