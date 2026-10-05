@@ -342,17 +342,25 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
 
     See #97052.
     """
-    from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs, _should_skip_upstream_prompt
+    from hermes_cli.update_cmd import (
+        _count_commits_between, _fetch_is_rate_limited, _has_upstream_remote, _no_prompt_git_kwargs, _retry_on_rate_limit,
+        _should_skip_upstream_prompt,
+    )
     from hermes_cli.update_cmd_check import tracking_refspec
     if not _has_upstream_remote(git_cmd, cwd) and (
         _should_skip_upstream_prompt() or not _offer_upstream_remote(git_cmd, cwd, assume_yes=assume_yes, input_fn=input_fn)
     ):
         return False
     print("\n→ Fetching upstream...")
-    try:
-        subprocess.run(git_cmd + ["fetch", "upstream", tracking_refspec("upstream", "main"), "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
-    except subprocess.CalledProcessError:
-        print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
+    fetch = _retry_on_rate_limit(lambda: subprocess.run(
+        git_cmd + ["fetch", "upstream", tracking_refspec("upstream", "main"), "--quiet"],
+        cwd=cwd, capture_output=True, text=True, check=False, **_no_prompt_git_kwargs(),
+    ))
+    if fetch.returncode != 0:
+        if _fetch_is_rate_limited(fetch.stderr):
+            print("  ✗ Upstream is still rate-limiting fetches (HTTP 429). Skipping upstream sync; retry later.")
+        else:
+            print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
         return False
     origin_ahead = _count_commits_between(git_cmd, cwd, "upstream/main", "origin/main")
     upstream_ahead = _count_commits_between(git_cmd, cwd, "origin/main", "upstream/main")
@@ -369,11 +377,13 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
     if upstream_ahead == 0:
         print("  ✓ Fork is up to date with upstream")
         return True
-    print(f"\n→ Fork is {upstream_ahead} commit(s) behind upstream\n→ Pulling from upstream...")
+    print(f"\n→ Fork is {upstream_ahead} commit(s) behind upstream\n→ Fast-forwarding to upstream...")
+    # Merge the ref fetched above rather than ``git pull``: a pull re-fetches over the network,
+    # outside the 429 retry policy, so one throttle there would skip an otherwise recoverable update.
     try:
-        subprocess.run(git_cmd + ["pull", "--ff-only", "upstream", "main"], cwd=cwd, check=True, **_no_prompt_git_kwargs())
+        subprocess.run(git_cmd + ["merge", "--ff-only", "upstream/main"], cwd=cwd, check=True, **_no_prompt_git_kwargs())
     except subprocess.CalledProcessError:
-        print("  ✗ Failed to pull from upstream. You may need to resolve conflicts manually.")
+        print("  ✗ Failed to fast-forward to upstream. You may need to resolve conflicts manually.")
         return False
     print("  ✓ Updated from upstream\n→ Syncing fork...")
     if _sync_fork_with_upstream(git_cmd, cwd):
