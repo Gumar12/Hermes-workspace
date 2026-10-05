@@ -607,7 +607,8 @@ class HostedRoomRuntime:
             self._drop_lease(binding.room_id)
             self._record_task_error(attempt, f"fenced: {exc}")
         except Exception as exc:
-            if submit_attempted and bool(getattr(exc, "not_admitted", False)):
+            if (submit_attempted and not bool(getattr(exc, "ambiguous", False))
+                    and bool(getattr(exc, "not_admitted", False))):
                 try:
                     state.requeue_not_admitted_task(self.db_path, attempt, clock=self.clock)
                 except (state.StaleLeaseError, state.StaleTaskError) as fence_exc:
@@ -800,6 +801,8 @@ class HostedRoomRuntime:
         for task in unresolved:
             attempt_key = (
                 binding.room_id, task["identity"].task_id, int(task["execution_generation"]))
+            # A peer whose same-generation recovery fails keeps the room waiting: deferring here
+            # would let Retry start the turn again under a new idempotency key.
             is_local = self._transport_for(binding, task) is self.rpc
             if is_local and attempt_key not in inspected:
                 inspection = self._inspect_local_recovery_session(task)
