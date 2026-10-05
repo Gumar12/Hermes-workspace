@@ -2488,6 +2488,7 @@ _correction_method("session.redirect", "redirect", "redirected",
 
 # ── delegation / spawn trees ─────────────────────────────────────────
 @method("delegation.status")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     from tools import delegate_tool as dt
     return _ok(rid, {"active": dt.list_active_subagents(), "paused": dt.is_spawn_paused(),
@@ -2502,6 +2503,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("subagent.steer")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     """Queue steering text into a live delegated child (the in-flight tool call is never cut). "queued"
     is not "delivered": a child past its final tool batch surfaces ``missed_steer`` on the parent entry."""
