@@ -74,3 +74,28 @@ def test_kanban_block_reports_stale_run_reason(worker_task):
     assert "unknown id" not in out["error"]
     with kbc.connect() as conn:
         assert kb.get_task(conn, task_id).status == "ready"
+
+
+def test_kanban_cli_block_reports_stale_run_reason(worker_task, capsys):
+    import argparse
+
+    from hermes_cli import kanban as kanban_cli
+
+    task_id, run_id = worker_task
+    with kbc.connect() as conn:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'ready', current_run_id = NULL WHERE id = ?",
+                (task_id,),
+            )
+
+    args = argparse.Namespace(task_id=task_id, ids=None, reason=["stale", "worker"], kind=None)
+    assert kanban_cli._cmd_block(args) == 1
+    err = capsys.readouterr().err
+
+    assert "stale run" in err
+    assert str(run_id) in err
+    assert "cannot block" in err
+    assert "unknown id" not in err
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, task_id).status == "ready"
