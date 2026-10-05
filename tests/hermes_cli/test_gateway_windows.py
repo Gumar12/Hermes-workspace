@@ -348,6 +348,41 @@ def test_install_scheduled_task_recreates_instead_of_change(monkeypatch, tmp_pat
     assert "cmd.exe" not in xml_seen["text"]
 
 
+def test_jscript_launcher_is_explicit_and_task_drift_converges(monkeypatch, tmp_path):
+    """A missing VBScript engine selects JScript without depending on .js association."""
+    script = tmp_path / "Hermes_Gateway.cmd"
+    monkeypatch.setattr(gateway_windows, "_vbscript_engine_available", lambda: False)
+    monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: None)
+    monkeypatch.setattr(
+        gateway_windows, "_resolve_detached_python", lambda exe: (r"C:\\venv\\Scripts\\python.exe", Path(r"C:\\venv"), [])
+    )
+    xml = gateway_windows._build_scheduled_task_xml("Hermes_Gateway", script.with_suffix(".js"), None)
+    assert "//B //Nologo //E:JScript" in xml
+    assert "Hermes_Gateway.js" in xml
+    assert gateway_windows.compare_scheduled_task_drift(xml, xml) == []
+
+    js = gateway_windows._build_gateway_js_script(
+        r"C:\\venv\\Scripts\\python.exe", r"C:\\Hermes", r"C:\\Hermes", "--profile work"
+    )
+    assert 'WScript.CreateObject("WScript.Shell")' in js
+    assert "sh.Run(" in js and ", 0, false" in js.lower()
+    assert "cmd.exe" not in js.lower()
+
+
+def test_engine_switch_cleanup_removes_both_startup_launcher_extensions(monkeypatch, tmp_path):
+    vbs, js = tmp_path / "Hermes_Gateway.vbs", tmp_path / "Hermes_Gateway.js"
+    for path in (vbs, js):
+        path.write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(gateway_windows, "_startup_entry_candidates", lambda: [vbs, js])
+    monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: tmp_path / "Hermes_Gateway.cmd")
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
+
+    assert gateway_windows.redundant_autostart_entries() == [vbs, js]
+    done, warnings = gateway_windows._remove_startup_entries()
+    assert warnings == [] and len(done) == 2
+    assert not vbs.exists() and not js.exists()
+
+
 def test_gateway_vbs_script_is_console_less(monkeypatch):
     """The .vbs launcher must avoid cmd.exe entirely and Run pythonw hidden
     (issue #45599 fix A: no console -> no logon CTRL_CLOSE_EVENT / 0xC000013A)."""
