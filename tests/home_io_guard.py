@@ -32,6 +32,23 @@ _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
 
 
+def _runtime_python_strs() -> frozenset[str]:
+    """The interpreter a PM-activated shell advertises through ``HERMES_PYTHON``.
+
+    A PM-managed install keeps it under the real Hermes home (``~/.hermes/tools/python-*``) while
+    the tests may run under another interpreter, so it is not among the prefixes above. Spawn-argv
+    resolution (``_apply_tui_python_env``) stats it to pick the launcher; that probe is checked at
+    import, before any test can change the environment, and allowed for metadata only.
+    """
+    python = os.environ.get("HERMES_PYTHON", "").strip()
+    if not python or not os.path.isabs(python):
+        return frozenset()
+    return frozenset({_normcase(os.path.abspath(python)), _normcase(os.path.realpath(python))})
+
+
+_RUNTIME_PYTHON_STRS = _runtime_python_strs()
+
+
 def _within(path: str, prefix: str) -> bool:
     """``Path(path).is_relative_to(prefix)`` for two normalized, case-folded absolute strings."""
     if path == prefix:
@@ -85,6 +102,9 @@ class HomeIOGuard:
             # Resolving the root itself (get_default_hermes_root's relative_to
             # probe) reads no state; only its contents are guarded.
             if metadata and absolute in roots:
+                return
+            # Existence/executable probe of the advertised runtime python (not a read of its data).
+            if metadata and absolute in _RUNTIME_PYTHON_STRS:
                 return
             # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``. A developer shell puts
             # PM's tool store (~/.hermes/tools/...) on PATH; probing an executable there is
