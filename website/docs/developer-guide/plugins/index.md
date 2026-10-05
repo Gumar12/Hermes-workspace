@@ -320,6 +320,27 @@ this Hermes understands still loads with a warning.
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
 
+A plugin's `pyproject.toml` owns packaging when it declares `[project]` or
+`[build-system]`; a tooling-only file (for example, `[tool.ruff]`) does not
+replace `python_dependencies` / `pip_dependencies` in the manifest. Without
+manifest dependencies, that tooling-only plugin adds no Python workspace member.
+For a shared-runtime member, `project.requires-python` must include the Python
+version running the Hermes environment: both an overly high floor and a
+restrictive upper bound can prevent resolution. Do not copy the Python floor
+from a separate sidecar's lockfile. If the plugin genuinely owns a different
+interpreter, use `python_runtime: external` and manage that runtime separately.
+
+If an earlier failed dependency sync disabled a tooling-only plugin, upgrading
+Hermes does not automatically re-enable it. After updating to a version with
+this classification fix and completing any pending dependency update, run
+`hermes plugins list`, then `hermes plugins enable <name>` using the listed name
+(in the affected profile). Allow dependency preparation to finish, and check
+`hermes plugins list` again before starting a new session. Merely removing the
+`plugins.disabled` entry before fixing the sync failure can disable it again on
+the next launch. For context-engine plugins, also verify the engine's activation
+in the new session or gateway logs; a configured `context.engine` alone does not
+prove the plugin loaded. This does not restore or audit historical engine data.
+
 ```yaml
 # plugin.yaml — manifest v2 example
 name: my-plugin
@@ -365,7 +386,8 @@ dependencies = [
 ]
 ```
 
-When both exist the `pyproject.toml` wins. What Hermes does with them:
+When both exist, a `pyproject.toml` declaring `[project]` or `[build-system]`
+wins; tooling-only TOML falls back to manifest dependencies. What Hermes does with them:
 
 - **Install / enable** — PM resolves core, selected extras, and the enabled plugin union
   across every profile sharing the dependency home, including custom `HERMES_HOME` roots.
