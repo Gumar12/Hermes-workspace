@@ -13,6 +13,7 @@ import logging
 import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from copy import deepcopy
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
@@ -543,7 +544,8 @@ class MemoryManager:
         clean_user_content = self._strip_skill_scaffolding(user_content) if providers else None
         if not clean_user_content:
             return
-        optional_kwargs = {"messages": messages, "turn_author": turn_author}
+        # Capture authors before enqueue; a later turn may reuse the caller dict.
+        optional_kwargs = {"messages": messages, "turn_author": deepcopy(turn_author)}
 
         snapshot_providers = [p for p in providers
                               if getattr(p, "sync_turn_snapshot_version", 0) == 1]
@@ -562,7 +564,8 @@ class MemoryManager:
                 if keyword == "messages" and provider in snapshot_providers:
                     kwargs[keyword] = snapshot
                 else:
-                    kwargs[keyword] = value
+                    # Each provider owns its copy; mutations cannot change other deliveries.
+                    kwargs[keyword] = deepcopy(value) if keyword == "turn_author" else value
             provider.sync_turn(clean_user_content, assistant_content, **kwargs)
 
         self._submit_background(
