@@ -2,6 +2,31 @@
 
 import concurrent.futures
 import contextlib
+import logging
+import time
+
+from cron.jobs import warn_store_unwritable
+
+logger = logging.getLogger("cron.scheduler")
+
+# Log the yield at most once per episode (reset when the skew changes) to avoid per-interval spam.
+_YIELD_LOG_INTERVAL_SECONDS = 3600.0
+_last_yield_log: dict[str, object] = {}
+
+
+def _log_tick_yield_once(reason: str) -> None:
+    """Log the yield at error level once per episode (skew signature)."""
+    global _last_yield_log
+    now = time.monotonic()
+    last_reason = _last_yield_log.get("reason")
+    last_at = _last_yield_log.get("at", 0.0)
+    if last_reason != reason or (now - float(last_at)) >= _YIELD_LOG_INTERVAL_SECONDS:
+        logger.error(
+            "Cron tick yielded: this process is running stale code (%s) and a "
+            "fresher gateway owns the runtime lock — jobs will fire from that "
+            "process. Restart this one to reclaim its ticks.",
+            reason)
+    _last_yield_log = {"reason": reason, "at": now}
 
 
 def tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None):
@@ -27,7 +52,7 @@ def _tick_admitted(
     # lock, ITS ticker dispatches. With no fresh holder (desktop-standalone) the tick proceeds.
     _skew = _sched._should_yield_tick_to_fresh_gateway()
     if _skew is not None:
-        _sched._log_tick_yield_once(f"boot={_skew[0]} disk={_skew[1]}")
+        _log_tick_yield_once(f"boot={_skew[0]} disk={_skew[1]}")
         raise _sched.CronTickYielded(_skew[0], _skew[1])
 
     lock_dir, lock_file = _sched._get_lock_paths()
@@ -80,7 +105,17 @@ def _tick_admitted(
         # Advance next_run_at for recurring jobs FIRST, under the lock, before any execution
         # (at-most-once). Re-advancing running jobs keeps the grace window alive; mark_job_run
         # overwrites it on completion. Composes with the claim-time advance in claim_job_for_fire.
-        _sched.advance_next_runs([job["id"] for job in due_jobs])
+        try:
+            _sched.advance_next_runs([job["id"] for job in due_jobs])
+        except OSError as exc:
+            # No durable advance -> a crash mid-run would re-fire recurring jobs; skipping is the
+            # at-most-once side. One-shots still go through their own fire claim.
+            n = len(due_jobs)
+            due_jobs = [j for j in due_jobs if j.get("schedule", {}).get("kind") not in {"cron", "interval"}]
+            warn_store_unwritable(exc, f"skipped {n - len(due_jobs)} recurring job(s)", "advance")
+            if not due_jobs:
+                _sched._sweep_mcp_orphans()
+                return 0
 
         _max_workers = _sched._resolve_max_parallel_workers()
         if verbose:

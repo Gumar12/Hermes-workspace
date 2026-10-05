@@ -1246,6 +1246,26 @@ def _write_marker(name: str, text: str, tmp_prefix: str) -> None:
         pass
 
 
+# One WARNING per (store, errno, site) per window: an unwritable store fails every 60s tick until fixed;
+# the site keeps the scan's warning from silencing the tick's "skipped jobs" one.
+_STORE_WARN_INTERVAL_SECONDS = 900.0
+_last_store_warning: dict = {}
+
+
+def warn_store_unwritable(exc: OSError, consequence: str, site: str) -> None:
+    """Rate-limited WARNING for a failed cron store write (ENOSPC/EROFS/EACCES). Callers skip the
+    dispatch that needed the write: no job runs without a durable advance/fire claim."""
+    cron_dir = str(_current_cron_store().cron_dir)  # multi-profile gateway: one key per store
+    now, key = time.monotonic(), (cron_dir, exc.errno, site)
+    last = _last_store_warning.get(key)
+    if last is not None and now - last < _STORE_WARN_INTERVAL_SECONDS:
+        return
+    _last_store_warning[key] = now
+    logger.warning(
+        "Cron store %s is unwritable (%s); %s. Jobs stay due and fire once the store accepts writes "
+        "again.", cron_dir, exc, consequence)
+
+
 def record_ticker_heartbeat(success: bool = False) -> None:
     """Record ticker liveness (+ last-success marker when ``success``) so `cron status` can tell
     "alive but failing" from "firing"; scoped per profile store.
@@ -1310,20 +1330,6 @@ def get_ticker_success_age() -> Optional[float]:
     (#69377).
     """
     return _epoch_file_age("ticker_last_success")
-
-
-def get_catch_up_occurrence_count() -> int:
-    """Return the profile-local stale-schedule catch-up count."""
-    path = _current_cron_store().cron_dir / "catch_up_occurrences"
-    try:
-        return max(0, int(path.read_text(encoding="utf-8-sig").strip()))
-    except (OSError, ValueError):
-        return 0
-
-
-def record_catch_up_occurrence() -> None:
-    """Increment the profile-local stale-schedule catch-up counter, best effort."""
-    _write_marker("catch_up_occurrences", str(get_catch_up_occurrence_count() + 1), ".count_")
 
 
 def record_ticker_error(message: str) -> None:
@@ -2227,23 +2233,6 @@ def trigger_job(job_id: str, extra_prompt: Optional[str] = None) -> Optional[Dic
     })
 
 
-def _claim_owner_is_dead(claim: Dict[str, Any]) -> bool:
-    """True when the claim's ``by`` names a process on THIS host that provably no longer exists.
-    ``_machine_id()`` stamps ``host:pid[:token]``; a foreign host, an explicit HERMES_MACHINE_ID,
-    or any liveness-probe failure returns False (fail safe: only a proven death shortens the TTL)."""
-    parts = str(claim.get("by") or "").split(":")
-    if len(parts) < 2 or not parts[1].isdigit():
-        return False
-    try:
-        import socket
-        if parts[0] != socket.gethostname():
-            return False
-        from gateway.status import _pid_exists
-        return not _pid_exists(int(parts[1]))
-    except Exception:
-        return False
-
-
 def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
     """True for a well-formed claim aged within ``[0, ttl)`` whose owner is not provably dead:
     future-dated (clock/TZ skew) or malformed claims count as stale so they can never wedge a
@@ -2255,6 +2244,7 @@ def _claim_is_live(claim: Any, now: datetime, ttl_seconds: float) -> bool:
     claimed_at = _parse_aware(claim["at"])
     if claimed_at is None or not (0 <= _elapsed_seconds(now, claimed_at) < ttl_seconds):
         return False
+    from cron.scheduler_ownership import _claim_owner_is_dead
     return not _claim_owner_is_dead(claim)
 
 
@@ -3150,6 +3140,7 @@ def _fast_forward_missed_recurring(d: _DueJob, grace: int) -> bool:
         "Job '%s' missed its scheduled time (%s, grace=%ds). "
         "Running now; next run provisionally set to: %s (re-anchored on completion)",
         d.label, d.next_run, grace, new_next)
+    from cron.occurrences import record_catch_up_occurrence
     record_catch_up_occurrence()
     return False
 
@@ -3351,7 +3342,10 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                 job.get("name") or job.get("id") or "?")
 
     if scan.needs_save:
-        save_jobs(raw_jobs, removed_ids=scan.removed or None)
+        try:
+            save_jobs(raw_jobs, removed_ids=scan.removed or None)
+        except OSError as exc:  # repairs live in memory; the next tick retries the persist
+            warn_store_unwritable(exc, "due-scan repairs not persisted", "scan")
     return due
 
 
