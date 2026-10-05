@@ -543,7 +543,8 @@ from cron.jobs import (
     save_job_output, self_removal_delivery_allowed, self_removal_delivery_scope, use_cron_store)
 from cron.execution_identity import enter_cron_execution, exit_cron_execution
 from cron.executions import (
-    _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution, finish_execution,
+    _TERMINAL_STATES, HANDOFF_ADOPTION_GRACE_SECONDS, create_execution,
+    discard_unstarted_execution, finish_execution,
     get_execution, mark_execution_handoff_pending, mark_execution_running,
     recover_interrupted_executions, terminalize_dead_owner)
 
@@ -4279,8 +4280,11 @@ def _process_due_job(job: dict, adapters, loop, verbose: bool) -> bool:
     # Claim only when the worker actually starts, so a queued lease can't expire first.
     claimed = claim_job_for_fire(job["id"], return_job=True)
     if not claimed:
-        finish_execution(
-            job["execution_id"], success=False, error="Fire claim lost; execution was not started.")
+        discard_unstarted_execution(job["execution_id"])
+        logger.info(
+            "Job '%s': fire claim rejected for scheduled instant %s; execution was not started",
+            job["id"], job.get("_scheduled_instant"),
+        )
         return True
     # CAS returns the persisted record; bool fallback only for older test doubles.
     claimed_job = dict(claimed) if isinstance(claimed, dict) else dict(job)
